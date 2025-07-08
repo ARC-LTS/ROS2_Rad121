@@ -10,5 +10,6 @@ rad_heatmap_node:
     gaussian_blur_size: 15  # must be odd
     distance_cutoff: 4.0
     background_threshold: 0.0
+    path_log_frequency: 50.0
     predefined_zones_file: "/home/brendoncintas/radmon_ws/src/ROS2_rad121/rad121_monitor/params/predefined_zones.yaml"
 
