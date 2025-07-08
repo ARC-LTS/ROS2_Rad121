@@ -5,7 +5,6 @@
 #include "image_transport/image_transport.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "nav_msgs/msg/path.hpp"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -71,8 +70,7 @@ private:
     int gaussian_blur_size_;
     double overall_max_mrem_hr_;
     double tf_timeout_seconds_;
-    // double path_log_frequency_;
-    double image_update_frequency_;
+    double path_log_frequency_;
 
     std::string predefined_zones_file_path_;
     std::vector<ZoneOfInterest> zones_of_interest_;
@@ -87,12 +85,9 @@ private:
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
-    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
-
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr rad_costmap_pub_;
     image_transport::Publisher rad_image_pub_;
-    // rclcpp::TimerBase::SharedPtr path_log_timer_; // New timer for path logging
-    rclcpp::TimerBase::SharedPtr image_update_timer_;
+    rclcpp::TimerBase::SharedPtr path_log_timer_; // New timer for path logging
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -110,9 +105,7 @@ private:
         this->declare_parameter<double>("background_threshold_mrem_hr", 0.1);
         this->declare_parameter<std::string>("predefined_zones_file", "");
         this->declare_parameter<double>("tf_timeout_seconds", 0.2);
-        // this->declare_parameter<double>("path_log_frequency", 1.0);
-        this->declare_parameter<double>("image_update_frequency", 10.0);
-        this->declare_parameter<std::string>("path_topic", "/mapPath");
+        this->declare_parameter<double>("path_log_frequency", 1.0); // New parameter
 
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
@@ -125,8 +118,7 @@ private:
         background_threshold_mrem_hr_ = this->get_parameter("background_threshold_mrem_hr").as_double();
         predefined_zones_file_path_ = this->get_parameter("predefined_zones_file").as_string();
         tf_timeout_seconds_ = this->get_parameter("tf_timeout_seconds").as_double();
-        // path_log_frequency_ = this->get_parameter("path_log_frequency").as_double();         // New parameter
-        image_update_frequency_ = this->get_parameter("image_update_frequency").as_double(); // NEW
+        path_log_frequency_ = this->get_parameter("path_log_frequency").as_double(); // New parameter
 
         if (gaussian_blur_size_ <= 0)
             gaussian_blur_size_ = 1;
@@ -136,9 +128,7 @@ private:
         RCLCPP_INFO(this->get_logger(), "Predefined zones file path: '%s'", predefined_zones_file_path_.c_str());
         RCLCPP_INFO(this->get_logger(), "TF transform timeout: %.2f seconds", tf_timeout_seconds_);
         RCLCPP_INFO(this->get_logger(), "Background threshold (mrem/hr): %.4f", background_threshold_mrem_hr_);
-        // RCLCPP_INFO(this->get_logger(), "Path logging frequency: %.2f Hz", path_log_frequency_);
-        RCLCPP_INFO(this->get_logger(), "Image update frequency: %.2f Hz", image_update_frequency_);                                  // NEW
-        RCLCPP_INFO(this->get_logger(), "Subscribing to path on topic: '%s'", this->get_parameter("path_topic").as_string().c_str()); // NEW
+        RCLCPP_INFO(this->get_logger(), "Path logging frequency: %.2f Hz", path_log_frequency_);
     }
 
     void loadPredefinedZones()
@@ -203,25 +193,12 @@ private:
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/rad", 10, std::bind(&RadiationHeatmapNode::radCallback, this, std::placeholders::_1));
         rad_costmap_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/rad_heatmap", 10);
 
-        // if (path_log_frequency_ > 0)
-        //{
-        //     auto period = std::chrono::duration<double>(1.0 / path_log_frequency_);
-        //     path_log_timer_ = this->create_wall_timer(
-        //         std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-        //         std::bind(&RadiationHeatmapNode::logPathCallback, this));
-        // }
-
-        std::string path_topic = this->get_parameter("path_topic").as_string();
-        path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
-            path_topic, rclcpp::QoS(10), std::bind(&RadiationHeatmapNode::pathCallback, this, std::placeholders::_1));
-
-        // NEW: Timer for image updates
-        if (image_update_frequency_ > 0)
+        if (path_log_frequency_ > 0)
         {
-            auto period = std::chrono::duration<double>(1.0 / image_update_frequency_);
-            image_update_timer_ = this->create_wall_timer(
+            auto period = std::chrono::duration<double>(1.0 / path_log_frequency_);
+            path_log_timer_ = this->create_wall_timer(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-                std::bind(&RadiationHeatmapNode::updateRadiationField, this));
+                std::bind(&RadiationHeatmapNode::logPathCallback, this));
         }
     }
 
@@ -306,94 +283,54 @@ private:
         return {containing_zone_label, closest_zone_label};
     }
 
-    void drawCurrentRobotPose(cv::Mat &image_to_draw_on)
+    // New callback for path logging timer
+    void logPathCallback()
     {
-        // This function is called from within updateRadiationField, which already holds the lock
-        // or is operating on copied data, so we can safely access base_map_ info.
-        if (base_map_.info.width == 0)
-            return;
-
         geometry_msgs::msg::PoseStamped pose_in, pose_out;
         pose_in.header.frame_id = sensor_frame_;
-        // Use a zero timestamp to get the latest available transform
-        pose_in.header.stamp = rclcpp::Time();
+        pose_in.header.stamp = this->now();
 
         try
         {
-            // Use a short timeout to avoid blocking the rendering loop
-            pose_out = tf_buffer_.transform(pose_in, map_frame_, tf2::durationFromSec(0.1));
+            pose_out = tf_buffer_.transform(pose_in, map_frame_, tf2::durationFromSec(tf_timeout_seconds_));
 
-            double res = base_map_.info.resolution;
-            double ox = base_map_.info.origin.position.x;
-            double oy = base_map_.info.origin.position.y;
-
-            int px = static_cast<int>((pose_out.pose.position.x - ox) / res);
-            int py = static_cast<int>((pose_out.pose.position.y - oy) / res);
-
-            if (isCellInBounds(px, py, image_to_draw_on.cols, image_to_draw_on.rows))
-            {
-                // Draw a larger, bright yellow circle for the current pose to distinguish it
-                cv::circle(image_to_draw_on, cv::Point(px, py), 6, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
-            }
-        }
-        catch (const tf2::TransformException &ex)
-        {
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                                 "Could not get current robot pose for real-time marker: %s", ex.what());
-        }
-    }
-
-    void pathCallback(const nav_msgs::msg::Path::SharedPtr msg)
-    {
-        // Ensure the path is in the correct frame to be drawn on the map
-        if (msg->header.frame_id != map_frame_)
-        {
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                                 "Received path in frame '%s', but expected frame '%s'. Ignoring path.",
-                                 msg->header.frame_id.c_str(), map_frame_.c_str());
-            return;
-        }
-
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        robot_path_.clear();
-        robot_path_.reserve(msg->poses.size()); // Pre-allocate memory for efficiency
-
-        for (const auto &pose_stamped : msg->poses)
-        {
             PathPoint new_point;
-            new_point.timestamp = pose_stamped.header.stamp;
-            new_point.map_x = pose_stamped.pose.position.x;
-            new_point.map_y = pose_stamped.pose.position.y;
+            new_point.timestamp = this->now();
+            new_point.map_x = pose_out.pose.position.x;
+            new_point.map_y = pose_out.pose.position.y;
 
-            // We can still find the closest zone for each point if needed
             auto [containing, closest] = findZoneInfo(new_point.map_x, new_point.map_y);
             new_point.closest_zone_label = closest;
 
+            std::lock_guard<std::mutex> lock(map_mutex_);
             robot_path_.push_back(new_point);
+        }
+        catch (const tf2::TransformException &ex)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                 "Could not get robot pose for path logging: %s", ex.what());
         }
     }
 
     bool isCellInBounds(int x, int y, int width, int height) const { return x >= 0 && x < width && y >= 0 && y < height; }
-    bool isMapOccupied(const nav_msgs::msg::OccupancyGrid &map, int x, int y)
+    bool isMapOccupied(int x, int y, int width)
     {
-        int width = map.info.width;
         int idx = y * width + x;
-        if (static_cast<size_t>(idx) >= map.data.size())
+        if (static_cast<size_t>(idx) >= base_map_.data.size())
             return true;
-        return map.data[idx] >= 50;
+        return base_map_.data[idx] >= 50;
     }
-
-    bool isVisible(const nav_msgs::msg::OccupancyGrid &base_map, int x0, int y0, int x1, int y1)
+    bool isVisible(int x0, int y0, int x1, int y1)
     {
-        if (base_map.info.width == 0)
+        if (base_map_.info.width == 0)
             return false;
-        int w = base_map.info.width, h = base_map.info.height;
+        int w = base_map_.info.width, h = base_map_.info.height;
         int dx = std::abs(x1 - x0), dy = -std::abs(y1 - y0);
         int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
         int err = dx + dy, e2;
         while (true)
         {
-            if (!isCellInBounds(x0, y0, w, h) || isMapOccupied(base_map, x0, y0))
+            if (!isCellInBounds(x0, y0, w, h) || isMapOccupied(x0, y0, w))
                 return false;
             if (x0 == x1 && y0 == y1)
                 break;
@@ -517,32 +454,32 @@ private:
 
         logged_rad_entries_.push_back(current_log_entry);
 
-        //        if (process_for_heatmap)
-        //        {
-        //            if (base_map_.info.width > 0 && base_map_.info.height > 0 && !rad_field_.empty())
-        //            {
-        //                updateRadiationField();
-        //            }
-        //            else
-        //            {
-        //                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Map/RadField not initialized. Skipping heatmap update for processed sample.");
-        //            }
-        //        }
+        if (process_for_heatmap)
+        {
+            if (base_map_.info.width > 0 && base_map_.info.height > 0 && !rad_field_.empty())
+            {
+                updateRadiationField();
+            }
+            else
+            {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Map/RadField not initialized. Skipping heatmap update for processed sample.");
+            }
+        }
     }
 
-    std::pair<double, double> calculateCellContribution(const nav_msgs::msg::OccupancyGrid &base_map, const std::vector<RadiationSample> &samples, int x_cell, int y_cell, double wx_cell_center, double wy_cell_center, double res,
+    std::pair<double, double> calculateCellContribution(int x_cell, int y_cell, double wx_cell_center, double wy_cell_center, double res,
                                                         double origin_x, double origin_y, double inv_2sigma2,
                                                         double distance_cutoff_sq, int grid_width, int grid_height)
     {
         double numerator = 0.0;
         double denominator = 0.0;
-        for (const auto &sample : samples)
+        for (const auto &sample : samples_)
         {
             int sx_sample_cell = static_cast<int>((sample.x - origin_x) / res);
             int sy_sample_cell = static_cast<int>((sample.y - origin_y) / res);
             if (!isCellInBounds(sx_sample_cell, sy_sample_cell, grid_width, grid_height))
                 continue;
-            if (!isVisible(base_map, sx_sample_cell, sy_sample_cell, x_cell, y_cell))
+            if (!isVisible(sx_sample_cell, sy_sample_cell, x_cell, y_cell))
                 continue;
             double dx_world = wx_cell_center - sample.x;
             double dy_world = wy_cell_center - sample.y;
@@ -556,14 +493,12 @@ private:
         return {numerator, denominator};
     }
 
-
-     cv::Mat computeRawRadiationField(const std::vector<RadiationSample> &samples, const nav_msgs::msg::OccupancyGrid &base_map)
+    cv::Mat computeRawRadiationField()
     {
-        // Use the 'base_map' argument for dimensions, not the class member 'base_map_'
-        cv::Mat current_rad_field = cv::Mat::zeros(base_map.info.height, base_map.info.width, CV_32FC1);
-        double res = base_map.info.resolution;
-        double origin_x = base_map.info.origin.position.x;
-        double origin_y = base_map.info.origin.position.y;
+        cv::Mat current_rad_field = cv::Mat::zeros(base_map_.info.height, base_map_.info.width, CV_32FC1);
+        double res = base_map_.info.resolution;
+        double origin_x = base_map_.info.origin.position.x;
+        double origin_y = base_map_.info.origin.position.y;
         double inv_2sigma2 = 1.0 / (2.0 * gaussian_sigma_ * gaussian_sigma_);
         double distance_cutoff_sq = distance_cutoff_ * distance_cutoff_;
         for (int y = 0; y < current_rad_field.rows; ++y)
@@ -572,16 +507,14 @@ private:
             {
                 double wx_center = origin_x + (x + 0.5) * res;
                 double wy_center = origin_y + (y + 0.5) * res;
-                // Pass the missing 'base_map' and 'samples' arguments here
                 auto [numerator, denominator] = calculateCellContribution(
-                    base_map, samples, x, y, wx_center, wy_center, res, origin_x, origin_y, inv_2sigma2, distance_cutoff_sq,
+                    x, y, wx_center, wy_center, res, origin_x, origin_y, inv_2sigma2, distance_cutoff_sq,
                     current_rad_field.cols, current_rad_field.rows);
                 current_rad_field.at<float>(y, x) = (denominator > 1e-9) ? static_cast<float>(numerator / denominator) : 0.0f;
             }
         }
         return current_rad_field;
     }
-
 
     void applyGaussianBlur(cv::Mat &field)
     {
@@ -664,7 +597,7 @@ private:
         }
     }
 
-    cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &base_map)
+    cv::Mat createBaseMapImage()
     {
         cv::Mat base_gray(rad_field_.rows, rad_field_.cols, CV_8UC1);
         for (int y = 0; y < rad_field_.rows; ++y)
@@ -761,7 +694,7 @@ private:
         }
     }
 
-    void drawZoneMarkers(cv::Mat &image_to_draw_on, const std::vector<ZoneOfInterest> &zones, const nav_msgs::msg::OccupancyGrid &base_map)
+    void drawZoneMarkers(cv::Mat &image_to_draw_on)
     {
         if (base_map_.info.width == 0 || base_map_.info.height == 0 || image_to_draw_on.empty())
             return;
@@ -795,9 +728,9 @@ private:
     }
 
     // New function to draw the robot's trajectory
-    void drawRobotTrajectory(cv::Mat &image_to_draw_on, const std::vector<PathPoint> &robot_path, const nav_msgs::msg::OccupancyGrid &base_map)
+    void drawRobotTrajectory(cv::Mat &image_to_draw_on)
     {
-        std::lock_guard<std::mutex> lock(map_mutex_); // Lock to access robot_path_
+        //std::lock_guard<std::mutex> lock(map_mutex_); // Lock to access robot_path_
         if (robot_path_.empty() || base_map_.info.width == 0 || base_map_.info.height == 0 || image_to_draw_on.empty())
         {
             return;
@@ -869,67 +802,46 @@ private:
         }
     }
 
-    // In class RadiationHeatmapNode:
-
     void updateRadiationField()
     {
-        // --- Start of Critical Section ---
-        //std::unique_lock<std::mutex> lock(map_mutex_);
-
-        if (base_map_.info.width == 0 || base_map_.info.height == 0)
+        if (base_map_.info.width == 0 || base_map_.info.height == 0 || rad_field_.empty())
         {
-            RCLCPP_WARN_ONCE(this->get_logger(), "updateRadiationField called before map is initialized. Skipping update.");
-            return; // The lock is automatically released here.
+            RCLCPP_WARN_ONCE(this->get_logger(), "updateRadiationField called before map/rad_field fully initialized. Skipping update.");
+            return;
         }
+        rad_field_ = computeRawRadiationField();
+        applyGaussianBlur(rad_field_);
+        auto [current_min_val_on_field, current_max_val_on_field] = applyThresholdAndGetRange(rad_field_);
+        float display_scaling_max_val = std::max(current_max_val_on_field, static_cast<float>(overall_max_mrem_hr_));
+        float display_scaling_min_val = current_min_val_on_field;
+        updateCostmapData(rad_field_, display_scaling_min_val, display_scaling_max_val);
 
-        // Create deep copies of all shared data needed for processing.
-        // This is the key to performance and preventing dropped messages.
-        auto samples_copy = samples_;
-        auto path_copy = robot_path_;
-        auto base_map_copy = base_map_;
-        auto zones_copy = zones_of_interest_;
-        double overall_max_mrem_hr_copy = overall_max_mrem_hr_;
-
-        // Immediately release the lock after copying.
-        lock.unlock();
-        // --- End of Critical Section ---
-
-        // Now, all heavy processing happens on the copies, without blocking other callbacks.
-        // Note: We now pass the copied data to the helper functions.
-        cv::Mat current_rad_field = computeRawRadiationField(samples_copy, base_map_copy);
-        applyGaussianBlur(current_rad_field);
-
-        auto [min_val, max_val] = applyThresholdAndGetRange(current_rad_field);
-        float display_max = std::max(max_val, static_cast<float>(overall_max_mrem_hr_copy));
-
-        // The costmap data needs to be updated on the member variable, so we re-lock briefly at the end.
-        updateCostmapData(current_rad_field, min_val, display_max);
-
-        cv::Mat base_bgr = createBaseMapImage(base_map_copy);
-        cv::Mat color_heatmap = createColorHeatmapImage(current_rad_field, min_val, display_max);
-
-        cv::Mat blended_image;
-        if (base_bgr.size() == color_heatmap.size() && !base_bgr.empty())
+        cv::Mat base_bgr = createBaseMapImage();
+        cv::Mat color_heatmap_overlay = createColorHeatmapImage(rad_field_, display_scaling_min_val, display_scaling_max_val);
+        cv::Mat blended_image_output;
+        if (base_bgr.size() == color_heatmap_overlay.size() && !base_bgr.empty())
         {
-            cv::addWeighted(base_bgr, 0.5, color_heatmap, 0.5, 0.0, blended_image);
+            cv::addWeighted(base_bgr, 0.5, color_heatmap_overlay, 0.5, 0.0, blended_image_output);
         }
         else
         {
-            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Size mismatch or empty image before blending.");
+            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Size mismatch or empty image before blending. Cannot update heatmap image.");
+            if (!latest_blended_image_.empty())
+            {
+                publishResults(latest_blended_image_);
+            }
             return;
         }
+        addLegendToImage(blended_image_output, display_scaling_min_val, display_scaling_max_val);
+        if (!zones_of_interest_.empty())
+        {
+            drawZoneMarkers(blended_image_output);
+        }
+        // Draw the robot's trajectory
+        drawRobotTrajectory(blended_image_output);
 
-        addLegendToImage(blended_image, min_val, display_max);
-        drawZoneMarkers(blended_image, zones_copy, base_map_copy);
-        drawRobotTrajectory(blended_image, path_copy, base_map_copy);
-        drawCurrentRobotPose(blended_image); // This will use the member base_map_, which is fine.
-
-        // Lock again briefly to update the image used for saving.
-        lock.lock();
-        latest_blended_image_ = blended_image.clone();
-        lock.unlock();
-
-        publishResults(blended_image);
+        latest_blended_image_ = blended_image_output.clone();
+        publishResults(blended_image_output);
     }
 
     void saveMap()
