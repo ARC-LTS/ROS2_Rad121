@@ -36,17 +36,6 @@ add_executable(rad121_monitor_node src/rad121_monitor_node.cpp src/CUSB_RAD121.c
 ament_target_dependencies(rad121_monitor_node rclcpp std_msgs)
 target_link_libraries(rad121_monitor_node ${LIBFTDI_LIBRARIES})
 
-add_executable(rad_costmap_node src/rad_costmap_node.cpp)
-ament_target_dependencies(rad_costmap_node
-  rclcpp
-  std_msgs
-  nav_msgs
-  tf2
-  tf2_ros
-  tf2_geometry_msgs
-)
-target_link_libraries(rad_costmap_node ${OpenCV_LIBRARIES})
-
 add_executable(rad_heatmap_node src/rad_heatmap_node.cpp)
 ament_target_dependencies(rad_heatmap_node
   rclcpp
@@ -59,6 +48,7 @@ ament_target_dependencies(rad_heatmap_node
   tf2_ros
   tf2_geometry_msgs
   visualization_msgs
+  std_srvs
 )
 target_link_libraries(rad_heatmap_node
   ${OpenCV_LIBRARIES}
@@ -95,12 +85,20 @@ target_link_libraries(zone_selector_node
   yaml-cpp
 )
 
+add_executable(rad_mapper_node src/rad_mapper_node.cpp)
+ament_target_dependencies(rad_mapper_node
+  rclcpp
+  nav_msgs
+  std_msgs
+  tf2_ros
+)
+
 install(TARGETS
   rad121_monitor_node
-  rad_costmap_node
   rad_heatmap_node
   rad_pointcloud_node
   zone_selector_node
+  rad_mapper_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/

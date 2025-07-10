@@ -1,15 +1,22 @@
 rad_heatmap_node:
   ros__parameters:
-    use_sim_time: True
+    use_sim_time: False
     sensor_frame: "base_link"
-    output_directory: "/home/brendoncintas/radmon_ws/data/"
+    data_file: "/home/brendoncintas/radmon_ws/data/rad_data.csv" 
     map_frame: "map"
-    min_valid_cpm: 200.0
-    min_sample_cpm: 0.0
+    min_valid_mrem: 0.4
+    min_sample_mrem: 0.0
     gaussian_sigma: 5.0
     gaussian_blur_size: 15  # must be odd
-    distance_cutoff: 4.0
-    background_threshold: 0.0
+    distance_cutoff: 2.0
+    background_threshold_mrem_hr: 0.0
     path_log_frequency: 50.0
-    predefined_zones_file: "/home/brendoncintas/radmon_ws/src/ROS2_rad121/rad121_monitor/params/predefined_zones.yaml"
+    predefined_zones_file: "/home/brendoncintas/radmon_ws/predefined_zones.yaml"
+    output_file: "/home/brendoncintas/radmon_ws/data/final_heatmap.png"
+
+rad_mapper_node:
+  ros__parameters:
+    target_frame: "base_link"
+    source_frame: "odom"
+    output_file_path: "/home/brendoncintas/radmon_ws/data/rad_data.csv"
 
