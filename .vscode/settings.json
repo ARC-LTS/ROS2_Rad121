@@ -1,4 +1,7 @@
 {
     "cmake.ignoreCMakeListsMissing": true,
-    "cmake.configureOnOpen": true
+    "cmake.configureOnOpen": true,
+    "files.associations": {
+        "chrono": "cpp"
+    }
 }

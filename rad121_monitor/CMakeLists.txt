@@ -43,12 +43,12 @@ ament_target_dependencies(rad_heatmap_node
   sensor_msgs
   image_transport
   std_msgs
+  std_srvs
   nav_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
   visualization_msgs
-  std_srvs
 )
 target_link_libraries(rad_heatmap_node
   ${OpenCV_LIBRARIES}
@@ -88,17 +88,18 @@ target_link_libraries(zone_selector_node
 add_executable(rad_mapper_node src/rad_mapper_node.cpp)
 ament_target_dependencies(rad_mapper_node
   rclcpp
-  nav_msgs
   std_msgs
+  geometry_msgs
   tf2_ros
+  std_srvs
 )
 
 install(TARGETS
   rad121_monitor_node
   rad_heatmap_node
+  rad_mapper_node
   rad_pointcloud_node
   zone_selector_node
-  rad_mapper_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/

@@ -2,7 +2,6 @@ rad_heatmap_node:
   ros__parameters:
     use_sim_time: False
     sensor_frame: "base_link"
-    data_file: "/home/brendoncintas/radmon_ws/data/rad_data.csv" 
     map_frame: "map"
     min_valid_mrem: 0.4
     min_sample_mrem: 0.0
@@ -18,5 +17,3 @@ rad_mapper_node:
   ros__parameters:
     target_frame: "base_link"
     source_frame: "odom"
-    output_file_path: "/home/brendoncintas/radmon_ws/data/rad_data.csv"
-
