@@ -1,0 +1,6 @@
+# Request: A list of points to get predictions for
+geometry_msgs/Point[] points_to_predict
+---
+# Response: The mean and standard deviation for each point
+float64[] predicted_mean
+float64[] predicted_std_dev

@@ -1,18 +1,23 @@
-rad_heatmap_node:
+radiation_heatmap_node:
   ros__parameters:
     use_sim_time: False
     sensor_frame: "base_link"
     map_frame: "map"
+    output_directory: "/home/brendoncintas/radmon_ws/data/" # Changed from output_file
+
+    # Sample filtering parameters
     min_valid_mrem: 0.4
     min_sample_mrem: 0.0
+    background_threshold_mrem_hr: 0.0
+
+    # Image processing parameters
     gaussian_sigma: 5.0
     gaussian_blur_size: 15  # must be odd
-    distance_cutoff: 2.0
-    background_threshold_mrem_hr: 0.0
-    path_log_frequency: 50.0
-    predefined_zones_file: "/home/brendoncintas/radmon_ws/predefined_zones.yaml"
-    output_file: "/home/brendoncintas/radmon_ws/data/final_heatmap.png"
+    
+    # New parameter for controlling the real-time error map
+    error_map_update_frequency: 1.0 # In Hz
 
+# Parameters for other nodes remain unchanged
 rad_mapper_node:
   ros__parameters:
     target_frame: "base_link"

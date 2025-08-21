@@ -26,11 +26,11 @@ def generate_launch_description():
             output='screen'
         ),
 
-        Node(
-            package='rad121_monitor',
-            executable='rad_heatmap_node',
-            name='rad_heatmap_node',
-            parameters=[param_file_heatmap],
-            output='screen'
-        ),
+        #Node(
+        #    package='rad121_monitor',
+        #    executable='rad_heatmap_node',
+        #    name='rad_heatmap_node',
+        #    parameters=[param_file_heatmap],
+        #    output='screen'
+        #),
     ])

@@ -28,16 +28,26 @@ find_package(octomap_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+find_package(rosidl_default_generators REQUIRED)
+
 pkg_check_modules(LIBFTDI REQUIRED libftdi1)
 
 include_directories(include ${LIBFTDI_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
+
+# Tell the service generator that it depends on geometry_msgs
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/GPPredict.srv"
+  "srv/GetHeatmaps.srv"
+  DEPENDENCIES geometry_msgs
+)
 
 add_executable(rad121_monitor_node src/rad121_monitor_node.cpp src/CUSB_RAD121.cpp)
 ament_target_dependencies(rad121_monitor_node rclcpp std_msgs)
 target_link_libraries(rad121_monitor_node ${LIBFTDI_LIBRARIES})
 
-add_executable(rad_heatmap_node src/rad_heatmap_node.cpp)
-ament_target_dependencies(rad_heatmap_node
+add_executable(radiation_heatmap_node src/rad_heatmap_node.cpp)
+
+ament_target_dependencies(radiation_heatmap_node
   rclcpp
   cv_bridge
   sensor_msgs
@@ -50,9 +60,12 @@ ament_target_dependencies(rad_heatmap_node
   tf2_geometry_msgs
   visualization_msgs
 )
-target_link_libraries(rad_heatmap_node
+
+# Link the executable against the generated service library
+target_link_libraries(radiation_heatmap_node
   ${OpenCV_LIBRARIES}
   yaml-cpp
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
 add_executable(rad_pointcloud_node src/rad_pointcloud_node.cpp)
@@ -92,15 +105,23 @@ ament_target_dependencies(rad_mapper_node
   geometry_msgs
   tf2_ros
   std_srvs
+  nav_msgs
+  cv_bridge
+  visualization_msgs
 )
 
 install(TARGETS
   rad121_monitor_node
-  rad_heatmap_node
+  radiation_heatmap_node
   rad_mapper_node
   rad_pointcloud_node
   zone_selector_node
   DESTINATION lib/${PROJECT_NAME})
+
+install(PROGRAMS
+  scripts/gp_predictor_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY include/
   DESTINATION include/)
@@ -109,6 +130,9 @@ install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
 
 install(DIRECTORY params
+  DESTINATION share/${PROJECT_NAME})
+
+install(DIRECTORY models
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()
