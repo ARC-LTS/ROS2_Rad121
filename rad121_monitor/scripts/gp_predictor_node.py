@@ -1,53 +1,64 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-import pickle
 import numpy as np
+import GPy # You will need to have GPy installed (pip install GPy)
 from rad121_monitor.srv import GPPredict
 
 class GPPredictor(Node):
     def __init__(self):
         super().__init__('gp_predictor_node')
-        
-        self.declare_parameter('model_path', 'path/to/your/model.pkl')
-        model_path = self.get_parameter('model_path').get_parameter_value().string_value
-        self.get_logger().info(f"Attempting to load GP models from: {model_path}")
-
-        try:
-            with open(model_path, 'rb') as f:
-                model_data = pickle.load(f)
-                self.gp_mean_model = model_data['gp_lo']
-                self.gp_std_dev_model = model_data['gp_delta']
-            self.get_logger().info('Successfully loaded GP models.')
-        except Exception as e:
-            self.get_logger().error(f"An error occurred while loading models: {e}")
-            raise SystemExit
-
         self.srv = self.create_service(GPPredict, 'predict_gp', self.predict_callback)
-        self.get_logger().info('GP Prediction service is ready.')
+        self.get_logger().info('Dynamic GP Prediction service is ready.')
 
     def predict_callback(self, request, response):
+        self.get_logger().info(f"Received dynamic prediction request with {len(request.observed_x)} samples.")
+        
         try:
+            # 1. Get the training data from the request
+            observed_x = np.array(request.observed_x)
+            observed_y = np.array(request.observed_y)
+            observed_vals_mean = np.array(request.observed_values_mean)
+
+            if len(observed_x) == 0:
+                self.get_logger().warn("No observed data received, cannot train model.")
+                return response # Return empty response
+
+            # Combine X and Y into a single 2D array for GPy
+            training_points = np.vstack((observed_x, observed_y)).T
+            training_values = observed_vals_mean[:, None] # Reshape for GPy
+
+            # 2. Create and train a new GP model ON THE FLY
+            # This is the computationally expensive part
+            self.get_logger().info("Defining new GP kernel...")
+            kernel = GPy.kern.RBF(input_dim=2, variance=1., lengthscale=1.)
+            
+            self.get_logger().info("Creating new GP model...")
+            gp_mean_model = GPy.models.GPRegression(training_points, training_values, kernel)
+            
+            self.get_logger().info("Optimizing model (this may be slow)...")
+            gp_mean_model.optimize(messages=True)
+            self.get_logger().info("Model optimization complete.")
+
+            # 3. Get the points to predict
             points_to_predict = np.array([[p.x, p.y] for p in request.points_to_predict])
 
             if points_to_predict.shape[0] == 0:
-                response.predicted_mean = []
-                response.predicted_std_dev = []
                 return response
 
-            # Use the loaded GP models to predict mean and standard deviation
-            # GPy's predict method returns mean and variance, so we take the sqrt for std dev.
-            mean_prediction, _ = self.gp_mean_model.predict(points_to_predict)
-            std_dev_prediction, _ = self.gp_std_dev_model.predict(points_to_predict)
+            # 4. Predict using the newly trained model
+            self.get_logger().info(f"Predicting values for {points_to_predict.shape[0]} points...")
+            mean_prediction, var_prediction = gp_mean_model.predict(points_to_predict)
+            std_dev_prediction = np.sqrt(var_prediction)
 
             response.predicted_mean = mean_prediction.flatten().tolist()
-            # Ensure std deviation is non-negative
-            response.predicted_std_dev = np.abs(std_dev_prediction.flatten()).tolist()
+            response.predicted_std_dev = std_dev_prediction.flatten().tolist()
             
-            self.get_logger().info(f"Processed prediction request for {len(request.points_to_predict)} points.")
+            self.get_logger().info("Prediction successful.")
 
         except Exception as e:
-            self.get_logger().error(f"Failed to process prediction request: {e}")
+            self.get_logger().error(f"Failed to process dynamic prediction request: {e}")
+            # Ensure response is empty on failure
             response.predicted_mean = []
             response.predicted_std_dev = []
 
@@ -55,13 +66,9 @@ class GPPredictor(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    try:
-        gp_predictor_node = GPPredictor()
-        rclpy.spin(gp_predictor_node)
-    except (SystemExit, KeyboardInterrupt):
-        pass
-    finally:
-        rclpy.shutdown()
+    gp_predictor_node = GPPredictor()
+    rclpy.spin(gp_predictor_node)
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

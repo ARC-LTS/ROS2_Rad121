@@ -1,6 +1,10 @@
-# Request: A list of points to get predictions for
-geometry_msgs/Point[] points_to_predict
+# Request
+geometry_msgs/Point[] points_to_predict   # Where to predict
+float64[] observed_x                      # Collected sample X coords
+float64[] observed_y                      # Collected sample Y coords
+float64[] observed_values_mean            # Collected sample radiation values for the mean
+float64[] observed_values_std_dev         # Collected sample radiation values for the std dev
 ---
-# Response: The mean and standard deviation for each point
+# Response
 float64[] predicted_mean
 float64[] predicted_std_dev

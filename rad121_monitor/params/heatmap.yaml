@@ -1,6 +1,6 @@
-radiation_heatmap_node:
+rad_heatmap_node:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
     sensor_frame: "base_link"
     map_frame: "map"
     output_directory: "/home/brendoncintas/radmon_ws/data/" # Changed from output_file

@@ -45,9 +45,9 @@ add_executable(rad121_monitor_node src/rad121_monitor_node.cpp src/CUSB_RAD121.c
 ament_target_dependencies(rad121_monitor_node rclcpp std_msgs)
 target_link_libraries(rad121_monitor_node ${LIBFTDI_LIBRARIES})
 
-add_executable(radiation_heatmap_node src/rad_heatmap_node.cpp)
+add_executable(rad_heatmap_node src/rad_heatmap_node.cpp)
 
-ament_target_dependencies(radiation_heatmap_node
+ament_target_dependencies(rad_heatmap_node
   rclcpp
   cv_bridge
   sensor_msgs
@@ -62,7 +62,7 @@ ament_target_dependencies(radiation_heatmap_node
 )
 
 # Link the executable against the generated service library
-target_link_libraries(radiation_heatmap_node
+target_link_libraries(rad_heatmap_node
   ${OpenCV_LIBRARIES}
   yaml-cpp
   ${PROJECT_NAME}__rosidl_typesupport_cpp
@@ -112,7 +112,7 @@ ament_target_dependencies(rad_mapper_node
 
 install(TARGETS
   rad121_monitor_node
-  radiation_heatmap_node
+  rad_heatmap_node
   rad_mapper_node
   rad_pointcloud_node
   zone_selector_node
@@ -126,13 +126,13 @@ install(PROGRAMS
 install(DIRECTORY include/
   DESTINATION include/)
 
+install (DIRECTORY models
+  DESTINATION share/${PROJECT_NAME})
+
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
 
 install(DIRECTORY params
-  DESTINATION share/${PROJECT_NAME})
-
-install(DIRECTORY models
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()
