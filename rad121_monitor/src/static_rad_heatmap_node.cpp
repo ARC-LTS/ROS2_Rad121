@@ -17,8 +17,8 @@
 #include <thread>
 #include <future>
 #include <opencv2/opencv.hpp>
-
-struct RadiationSample { double x, y; };
+#include <map> 
+struct RadiationSample { double x, y; int id; }; 
 cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map);
 cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold);
 
@@ -58,11 +58,14 @@ private:
     nav_msgs::msg::OccupancyGrid base_map_;
     bool map_received_ = false;
     std::vector<RadiationSample> collected_samples_;
-    
+    int next_sample_id_ = 0; 
+
     std::mutex update_mutex_;
     bool is_updating_ = false;
     
-    cv::Mat persistent_occluded_heatmap_;
+    cv::Mat current_raw_heatmap_; 
+    std::map<int, cv::Mat> sample_occlusion_masks_; 
+    cv::Mat map_image_for_raycasting_;
 
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
     {
@@ -70,14 +73,19 @@ private:
             std::lock_guard<std::mutex> lock(data_mutex_);
             base_map_ = *msg;
             map_received_ = true;
-        }
-        
+            map_image_for_raycasting_ = cv::Mat(base_map_.info.height, base_map_.info.width, CV_8UC1);
+            for(unsigned int i=0; i<base_map_.data.size(); ++i) { 
+                map_image_for_raycasting_.data[i] = (base_map_.data[i] > 50) ? 255 : 0;
+            }
+            sample_occlusion_masks_.clear(); 
+        } 
         triggerGPUpdate();
     }
 
     void radCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
     {
         if (!map_received_ || msg->data.size() < 2) {
+            RCLCPP_WARN(this->get_logger(), "Map not received or invalid RAD message.");
             return;
         }
 
@@ -88,12 +96,14 @@ private:
             pose_in_sensor.header.stamp = this->get_clock()->now();
             tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(200));
             
+            int current_sample_id;
             {
                 std::lock_guard<std::mutex> lock(data_mutex_);
-                collected_samples_.push_back({pose_in_map.pose.position.x, pose_in_map.pose.position.y});
-            } 
+                current_sample_id = next_sample_id_++;
+                collected_samples_.push_back({pose_in_map.pose.position.x, pose_in_map.pose.position.y, current_sample_id});
+            }
 
-            RCLCPP_INFO(this->get_logger(), "New radiation sample logged. Triggering heatmap update.");
+            RCLCPP_INFO(this->get_logger(), "New radiation sample logged (ID %d). Triggering heatmap update.", current_sample_id);
             triggerGPUpdate();
 
         } catch (const tf2::TransformException &ex) {
@@ -105,21 +115,28 @@ private:
     {
         {
             std::lock_guard<std::mutex> lock(update_mutex_);
-            if (is_updating_) { return; }
+            if (is_updating_) { 
+                RCLCPP_DEBUG(this->get_logger(), "Update already in progress, skipping.");
+                return; 
+            }
             is_updating_ = true;
         }
 
         nav_msgs::msg::OccupancyGrid map_copy;
         std::vector<RadiationSample> samples_copy;
+        cv::Mat map_image_raycasting_copy;
+
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             if (!map_received_ || collected_samples_.empty()) {
                 std::lock_guard<std::mutex> update_lock(update_mutex_);
                 is_updating_ = false;
+                RCLCPP_WARN(this->get_logger(), "Map not received or no samples, cannot update.");
                 return;
             }
             map_copy = base_map_;
             samples_copy = collected_samples_;
+            map_image_raycasting_copy = map_image_for_raycasting_.clone();
         }
         
         auto request = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
@@ -130,7 +147,7 @@ private:
 
         for (unsigned int y = 0; y < map_copy.info.height; ++y) {
             for (unsigned int x = 0; x < map_copy.info.width; ++x) {
-                if (map_copy.data[y * map_copy.info.width + x] < 50) {
+                if (map_copy.data[y * map_copy.info.width + x] < 50) { 
                     geometry_msgs::msg::Point p;
                     p.x = origin_x + (x + 0.5) * res;
                     p.y = origin_y + (y + 0.5) * res;
@@ -140,7 +157,9 @@ private:
             }
         }
         
-        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords](rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedFuture future) {
+        RCLCPP_INFO(this->get_logger(), "Sending %zu points to GP service.", request->points_to_predict.size());
+
+        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords, map_image_raycasting_copy](rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedFuture future) {
             auto response = future.get();
             if (!response || response->predicted_mean.size() != valid_pixel_coords.size()) {
                 RCLCPP_ERROR(this->get_logger(), "GP service response is invalid or size mismatch.");
@@ -149,15 +168,37 @@ private:
                 return;
             }
 
-            cv::Mat raw_heatmap = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+            cv::Mat new_raw_heatmap = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
             for (size_t i = 0; i < valid_pixel_coords.size(); ++i) {
-                raw_heatmap.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_mean[i];
+                new_raw_heatmap.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_mean[i];
+            }
+            
+            {
+                std::lock_guard<std::mutex> lock(data_mutex_);
+                current_raw_heatmap_ = new_raw_heatmap;
             }
 
-            updateLocalRaycasting(raw_heatmap, map_copy, samples_copy);
+            for (const auto& sample : samples_copy) {
+                bool is_new_sample;
+                {
+                    std::lock_guard<std::mutex> lock(data_mutex_);
+                    is_new_sample = (sample_occlusion_masks_.find(sample.id) == sample_occlusion_masks_.end());
+                }
+                
+                if (is_new_sample) {
+                    cv::Mat single_sample_occlusion_mask = 
+                        generateSingleSampleOcclusionMask(sample, map_image_raycasting_copy, map_copy.info.resolution, map_copy.info.origin.position.x, map_copy.info.origin.position.y);
+                    {
+                        std::lock_guard<std::mutex> lock(data_mutex_);
+                        sample_occlusion_masks_[sample.id] = single_sample_occlusion_mask;
+                    }
+                }
+            }
+            
+            cv::Mat final_occluded_heatmap = combineOcclusionMasks(current_raw_heatmap_, samples_copy, sample_occlusion_masks_, map_image_raycasting_copy);
 
             cv::Mat base_bgr = createBaseMapImage(map_copy);
-            cv::Mat color_heatmap = createColorHeatmapImage(persistent_occluded_heatmap_, background_threshold_mrem_hr_);
+            cv::Mat color_heatmap = createColorHeatmapImage(final_occluded_heatmap, background_threshold_mrem_hr_);
             cv::Mat blended_image;
             cv::addWeighted(base_bgr, 0.6, color_heatmap, 0.4, 0.0, blended_image);
 
@@ -172,73 +213,64 @@ private:
         });
     }
 
-    void updateLocalRaycasting(const cv::Mat& raw_heatmap, const nav_msgs::msg::OccupancyGrid& map, const std::vector<RadiationSample>& samples)
-    {
-        if (raw_heatmap.empty()) return;
-
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        if (persistent_occluded_heatmap_.empty() || persistent_occluded_heatmap_.rows != (int)map.info.height || persistent_occluded_heatmap_.cols != (int)map.info.width) {
-            persistent_occluded_heatmap_ = cv::Mat::zeros(map.info.height, map.info.width, CV_32F);
-        }
-
-        geometry_msgs::msg::TransformStamped t;
-        try {
-            t = tf_buffer_.lookupTransform(map_frame_, sensor_frame_, tf2::TimePointZero);
-        } catch(const tf2::TransformException & ex) {
-            RCLCPP_WARN(this->get_logger(), "Could not get robot pose for local update: %s", ex.what());
-            return;
-        }
-
-        cv::Mat map_image(map.info.height, map.info.width, CV_8UC1);
-        for(unsigned int i=0; i<map.data.size(); ++i) { map_image.data[i] = (map.data[i] > 50) ? 255 : 0; }
-
-        std::vector<cv::Point> source_pixels;
-        double res = map.info.resolution;
-        double origin_x = map.info.origin.position.x;
-        double origin_y = map.info.origin.position.y;
+    cv::Mat generateSingleSampleOcclusionMask(const RadiationSample& sample, const cv::Mat& map_image, double res, double origin_x, double origin_y) {
+        cv::Mat mask = cv::Mat::zeros(map_image.size(), CV_8UC1);
         
-        int start_index = std::max(0, (int)samples.size() - raycasting_max_sources_);
-        for(size_t i = start_index; i < samples.size(); ++i) {
-            int px = static_cast<int>((samples[i].x - origin_x) / res);
-            int py = static_cast<int>((samples[i].y - origin_y) / res);
-            if (px >= 0 && px < map_image.cols && py >= 0 && py < map_image.rows) {
-                source_pixels.push_back(cv::Point(px, py));
-            }
+        int sample_px = static_cast<int>((sample.x - origin_x) / res);
+        int sample_py = static_cast<int>((sample.y - origin_y) / res);
+
+        if (sample_px < 0 || sample_px >= map_image.cols || sample_py < 0 || sample_py >= map_image.rows) {
+            RCLCPP_WARN(this->get_logger(), "Sample (%.2f, %.2f) is outside map boundaries, cannot generate occlusion mask.", sample.x, sample.y);
+            return mask;
         }
-        if (source_pixels.empty()) return;
 
-        int radius_px = static_cast<int>(raycasting_update_radius_m_ / res);
-        int robot_px = static_cast<int>((t.transform.translation.x - origin_x) / res);
-        int robot_py = static_cast<int>((t.transform.translation.y - origin_y) / res);
-        
-        int start_c = std::max(0, robot_px - radius_px);
-        int end_c = std::min((int)map.info.width, robot_px + radius_px);
-        int start_r = std::max(0, robot_py - radius_px);
-        int end_r = std::min((int)map.info.height, robot_py + radius_px);
-
-        cv::parallel_for_(cv::Range(start_r, end_r), [&](const cv::Range& range){
+        cv::parallel_for_(cv::Range(0, map_image.rows), [&](const cv::Range& range){
             for (int r = range.start; r < range.end; ++r) {
-                float* p_occluded = persistent_occluded_heatmap_.ptr<float>(r);
-                const float* p_raw = raw_heatmap.ptr<float>(r);
-
-                for (int c = start_c; c < end_c; ++c) {
+                for (int c = 0; c < map_image.cols; ++c) {
                     if (map_image.at<uchar>(r, c) == 255) continue;
-                    bool has_line_of_sight = false;
-                    for (const auto& source_px : source_pixels) {
-                        cv::LineIterator it(map_image, cv::Point(c, r), source_px);
-                        bool blocked = false;
-                        for(int i = 0; i < it.count; ++i, ++it) {
-                            if (map_image.at<uchar>(it.pos()) == 255) {
-                                blocked = true;
-                                break;
-                            }
+
+                    cv::LineIterator it(map_image, cv::Point(c, r), cv::Point(sample_px, sample_py));
+                    bool blocked = false;
+                    for(int i = 0; i < it.count; ++i, ++it) {
+                        if (map_image.at<uchar>(it.pos()) == 255) {
+                            blocked = true;
+                            break;
                         }
-                        if (!blocked) { has_line_of_sight = true; break; }
                     }
-                    p_occluded[c] = has_line_of_sight ? p_raw[c] : 0.0f;
+                    if (!blocked) {
+                        mask.at<uchar>(r, c) = 255;
+                    }
                 }
             }
         });
+        return mask;
+    }
+
+    cv::Mat combineOcclusionMasks(const cv::Mat& raw_heatmap, const std::vector<RadiationSample>& samples, const std::map<int, cv::Mat>& occlusion_masks, const cv::Mat& map_image) {
+        cv::Mat final_occluded_heatmap = cv::Mat::zeros(raw_heatmap.size(), CV_32F);
+
+        cv::parallel_for_(cv::Range(0, raw_heatmap.rows), [&](const cv::Range& range){
+            for (int r = range.start; r < range.end; ++r) {
+                for (int c = 0; c < raw_heatmap.cols; ++c) {
+                    if (map_image.at<uchar>(r, c) == 255) continue;
+
+                    float max_visible_rad = 0.0f;
+                    
+                    for (const auto& sample : samples) {
+                        auto it = occlusion_masks.find(sample.id);
+                        if (it != occlusion_masks.end()) {
+                            const cv::Mat& mask = it->second;
+                            if (mask.at<uchar>(r, c) == 255) { 
+                                max_visible_rad = std::max(max_visible_rad, raw_heatmap.at<float>(r, c));
+                            }
+                        }
+                    }
+                    final_occluded_heatmap.at<float>(r, c) = max_visible_rad;
+                }
+            }
+        });
+
+        return final_occluded_heatmap;
     }
     
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
