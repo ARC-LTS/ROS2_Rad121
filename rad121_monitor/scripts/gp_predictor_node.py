@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 import numpy as np
-import GPy # You will need to have GPy installed (pip install GPy)
+import GPy 
 from rad121_monitor.srv import GPPredict
 
 class GPPredictor(Node):
@@ -15,7 +15,6 @@ class GPPredictor(Node):
         self.get_logger().info(f"Received dynamic prediction request with {len(request.observed_x)} samples.")
         
         try:
-            # 1. Get the training data from the request
             observed_x = np.array(request.observed_x)
             observed_y = np.array(request.observed_y)
             observed_vals_mean = np.array(request.observed_values_mean)
@@ -24,12 +23,9 @@ class GPPredictor(Node):
                 self.get_logger().warn("No observed data received, cannot train model.")
                 return response # Return empty response
 
-            # Combine X and Y into a single 2D array for GPy
             training_points = np.vstack((observed_x, observed_y)).T
             training_values = observed_vals_mean[:, None] # Reshape for GPy
 
-            # 2. Create and train a new GP model ON THE FLY
-            # This is the computationally expensive part
             self.get_logger().info("Defining new GP kernel...")
             kernel = GPy.kern.RBF(input_dim=2, variance=1., lengthscale=1.)
             
@@ -40,13 +36,11 @@ class GPPredictor(Node):
             gp_mean_model.optimize(messages=True)
             self.get_logger().info("Model optimization complete.")
 
-            # 3. Get the points to predict
             points_to_predict = np.array([[p.x, p.y] for p in request.points_to_predict])
 
             if points_to_predict.shape[0] == 0:
                 return response
 
-            # 4. Predict using the newly trained model
             self.get_logger().info(f"Predicting values for {points_to_predict.shape[0]} points...")
             mean_prediction, var_prediction = gp_mean_model.predict(points_to_predict)
             std_dev_prediction = np.sqrt(var_prediction)
@@ -58,7 +52,6 @@ class GPPredictor(Node):
 
         except Exception as e:
             self.get_logger().error(f"Failed to process dynamic prediction request: {e}")
-            # Ensure response is empty on failure
             response.predicted_mean = []
             response.predicted_std_dev = []
 

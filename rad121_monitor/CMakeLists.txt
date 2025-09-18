@@ -34,10 +34,10 @@ pkg_check_modules(LIBFTDI REQUIRED libftdi1)
 
 include_directories(include ${LIBFTDI_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
 
-# Tell the service generator that it depends on geometry_msgs
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GPPredict.srv"
   "srv/GetHeatmaps.srv"
+  "srv/SaveHeatmap.srv"
   DEPENDENCIES geometry_msgs
 )
 
@@ -46,7 +46,6 @@ ament_target_dependencies(rad121_monitor_node rclcpp std_msgs)
 target_link_libraries(rad121_monitor_node ${LIBFTDI_LIBRARIES})
 
 add_executable(rad_heatmap_node src/rad_heatmap_node.cpp)
-
 ament_target_dependencies(rad_heatmap_node
   rclcpp
   cv_bridge
@@ -60,11 +59,28 @@ ament_target_dependencies(rad_heatmap_node
   tf2_geometry_msgs
   visualization_msgs
 )
-
-# Link the executable against the generated service library
 target_link_libraries(rad_heatmap_node
   ${OpenCV_LIBRARIES}
   yaml-cpp
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
+)
+
+add_executable(static_rad_heatmap_node src/static_rad_heatmap_node.cpp)
+ament_target_dependencies(static_rad_heatmap_node
+rclcpp
+cv_bridge
+sensor_msgs
+image_transport
+std_msgs
+std_srvs
+nav_msgs
+tf2
+tf2_ros
+tf2_geometry_msgs
+visualization_msgs
+)
+target_link_libraries(static_rad_heatmap_node
+  ${OpenCV_LIBRARIES}
   ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
@@ -113,6 +129,7 @@ ament_target_dependencies(rad_mapper_node
 install(TARGETS
   rad121_monitor_node
   rad_heatmap_node
+  static_rad_heatmap_node
   rad_mapper_node
   rad_pointcloud_node
   zone_selector_node
@@ -120,6 +137,7 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/gp_predictor_node.py
+  scripts/static_gp_predictor_node.py 
   DESTINATION lib/${PROJECT_NAME}
 )
 
