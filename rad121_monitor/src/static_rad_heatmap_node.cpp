@@ -17,10 +17,17 @@
 #include <thread>
 #include <future>
 #include <opencv2/opencv.hpp>
-#include <map> 
-struct RadiationSample { double x, y; int id; }; 
+#include <map>
+
+struct RadiationSample
+{
+    double x, y;
+    int id;
+};
 cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map);
 cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold);
+void addLegendToImage(cv::Mat &image, double min_val, double max_val);
+
 
 class RadiationHeatmapNode : public rclcpp::Node
 {
@@ -46,7 +53,7 @@ public:
 
         image_transport::ImageTransport it(this->shared_from_this());
         heatmap_pub_ = it.advertise("/rad_heatmap/map", 1);
-        
+
         gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
         RCLCPP_INFO(this->get_logger(), "Waiting for GP service...");
         gp_client_->wait_for_service();
@@ -58,13 +65,13 @@ private:
     nav_msgs::msg::OccupancyGrid base_map_;
     bool map_received_ = false;
     std::vector<RadiationSample> collected_samples_;
-    int next_sample_id_ = 0; 
+    int next_sample_id_ = 0;
 
     std::mutex update_mutex_;
     bool is_updating_ = false;
-    
-    cv::Mat current_raw_heatmap_; 
-    std::map<int, cv::Mat> sample_occlusion_masks_; 
+
+    cv::Mat current_raw_heatmap_;
+    std::map<int, cv::Mat> sample_occlusion_masks_;
     cv::Mat map_image_for_raycasting_;
 
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
@@ -74,28 +81,31 @@ private:
             base_map_ = *msg;
             map_received_ = true;
             map_image_for_raycasting_ = cv::Mat(base_map_.info.height, base_map_.info.width, CV_8UC1);
-            for(unsigned int i=0; i<base_map_.data.size(); ++i) { 
+            for (unsigned int i = 0; i < base_map_.data.size(); ++i)
+            {
                 map_image_for_raycasting_.data[i] = (base_map_.data[i] > 50) ? 255 : 0;
             }
-            sample_occlusion_masks_.clear(); 
-        } 
+            sample_occlusion_masks_.clear();
+        }
         triggerGPUpdate();
     }
 
     void radCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
     {
-        if (!map_received_ || msg->data.size() < 2) {
+        if (!map_received_ || msg->data.size() < 2)
+        {
             RCLCPP_WARN(this->get_logger(), "Map not received or invalid RAD message.");
             return;
         }
 
         geometry_msgs::msg::PoseStamped pose_in_map;
-        try {
+        try
+        {
             geometry_msgs::msg::PoseStamped pose_in_sensor;
             pose_in_sensor.header.frame_id = sensor_frame_;
             pose_in_sensor.header.stamp = this->get_clock()->now();
             tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(200));
-            
+
             int current_sample_id;
             {
                 std::lock_guard<std::mutex> lock(data_mutex_);
@@ -105,8 +115,9 @@ private:
 
             RCLCPP_INFO(this->get_logger(), "New radiation sample logged (ID %d). Triggering heatmap update.", current_sample_id);
             triggerGPUpdate();
-
-        } catch (const tf2::TransformException &ex) {
+        }
+        catch (const tf2::TransformException &ex)
+        {
             RCLCPP_WARN(this->get_logger(), "TF Error: %s", ex.what());
         }
     }
@@ -115,9 +126,9 @@ private:
     {
         {
             std::lock_guard<std::mutex> lock(update_mutex_);
-            if (is_updating_) { 
-                RCLCPP_DEBUG(this->get_logger(), "Update already in progress, skipping.");
-                return; 
+            if (is_updating_)
+            {
+                return;
             }
             is_updating_ = true;
         }
@@ -128,7 +139,8 @@ private:
 
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
-            if (!map_received_ || collected_samples_.empty()) {
+            if (!map_received_ || collected_samples_.empty())
+            {
                 std::lock_guard<std::mutex> update_lock(update_mutex_);
                 is_updating_ = false;
                 RCLCPP_WARN(this->get_logger(), "Map not received or no samples, cannot update.");
@@ -198,9 +210,16 @@ private:
             cv::Mat final_occluded_heatmap = combineOcclusionMasks(current_raw_heatmap_, samples_copy, sample_occlusion_masks_, map_image_raycasting_copy);
 
             cv::Mat base_bgr = createBaseMapImage(map_copy);
+            
             cv::Mat color_heatmap = createColorHeatmapImage(final_occluded_heatmap, background_threshold_mrem_hr_);
             cv::Mat blended_image;
             cv::addWeighted(base_bgr, 0.6, color_heatmap, 0.4, 0.0, blended_image);
+
+            double min_val, max_val;
+            cv::minMaxLoc(final_occluded_heatmap, &min_val, &max_val);
+            if (max_val < background_threshold_mrem_hr_) max_val = background_threshold_mrem_hr_ + 0.1;
+            if (min_val >= max_val) min_val = max_val - 0.1;
+            addLegendToImage(blended_image, min_val, max_val);
 
             std_msgs::msg::Header h;
             h.stamp = this->now();
@@ -317,6 +336,39 @@ cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold) {
     cv::compare(field, threshold, mask, cv::CMP_LT);
     color_field.setTo(cv::Scalar(0, 0, 0), mask);
     return color_field;
+}
+
+void addLegendToImage(cv::Mat &image, double min_val, double max_val)
+{
+    int border_width = 150;
+    cv::copyMakeBorder(image, image, 0, 0, 0, border_width, cv::BORDER_CONSTANT, cv::Scalar(255, 255, 255));
+
+    int legend_width = 40;
+    int legend_height = image.rows / 2;
+    int legend_x = image.cols - border_width + 30;
+    int legend_y = image.rows / 4;
+
+    cv::Mat legend_bar(legend_height, legend_width, CV_8UC3);
+    for (int r = 0; r < legend_height; ++r)
+    {
+        double ratio = (double)(legend_height - 1 - r) / (legend_height - 1);
+        uchar val = static_cast<uchar>(ratio * 255.0);
+
+        cv::Mat color_pixel(1, 1, CV_8UC1, val);
+        cv::Mat mapped_color;
+        cv::applyColorMap(color_pixel, mapped_color, cv::COLORMAP_JET);
+        cv::line(legend_bar, cv::Point(0, r), cv::Point(legend_width, r), mapped_color.at<cv::Vec3b>(0, 0), 2);
+    }
+
+    legend_bar.copyTo(image(cv::Rect(legend_x, legend_y, legend_width, legend_height)));
+
+    int text_x = legend_x + legend_width + 10;
+    cv::putText(image, "mrem/hr", cv::Point(legend_x, legend_y - 10),
+                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 0), 2);
+    cv::putText(image, cv::format("%.2f", max_val), cv::Point(text_x, legend_y + 15),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 2);
+    cv::putText(image, cv::format("%.2f", min_val), cv::Point(text_x, legend_y + legend_height),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 2);
 }
 
 int main(int argc, char **argv)
