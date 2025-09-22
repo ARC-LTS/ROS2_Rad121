@@ -1,7 +1,0 @@
-# Request: The desired filename for the output image.
-# Can be a simple name like "output.png" or a full path.
-string filename
----
-# Response: Indicates if the save was successful.
-bool success
-string message

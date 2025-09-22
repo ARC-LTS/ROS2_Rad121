@@ -11,6 +11,7 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "rad121_monitor/srv/gp_predict.hpp"
+#include "rad121_monitor/srv/save_maps.hpp"
 
 #include <vector>
 #include <mutex>
@@ -18,6 +19,7 @@
 #include <future>
 #include <opencv2/opencv.hpp>
 #include <map>
+#include <filesystem> // ADDED: Required for std::filesystem
 
 struct RadiationSample
 {
@@ -26,7 +28,6 @@ struct RadiationSample
 };
 cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map);
 cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold);
-// MODIFIED: Updated function prototype
 void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std::string &unit_label);
 
 class RadiationHeatmapNode : public rclcpp::Node
@@ -41,12 +42,15 @@ public:
         this->declare_parameter<double>("background_threshold_mrem_hr", 0.1);
         this->declare_parameter<int>("raycasting_max_sources", 20);
         this->declare_parameter<double>("raycasting_update_radius_m", 20.0);
+        this->declare_parameter<std::string>("output_directory", "/tmp");
+
 
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
         background_threshold_mrem_hr_ = this->get_parameter("background_threshold_mrem_hr").as_double();
         raycasting_max_sources_ = this->get_parameter("raycasting_max_sources").as_int();
         raycasting_update_radius_m_ = this->get_parameter("raycasting_update_radius_m").as_double();
+        output_directory_ = this->get_parameter("output_directory").as_string();
 
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(), std::bind(&RadiationHeatmapNode::mapCallback, this, std::placeholders::_1));
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/rad", 10, std::bind(&RadiationHeatmapNode::radCallback, this, std::placeholders::_1));
@@ -56,9 +60,14 @@ public:
         std_dev_heatmap_pub_ = it.advertise("/rad_heatmap/std_dev_map", 1);
 
         gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
+
+        save_maps_service_ = this->create_service<rad121_monitor::srv::SaveMaps>(
+            "save_rad_maps",
+            std::bind(&RadiationHeatmapNode::saveMapsCallback, this, std::placeholders::_1, std::placeholders::_2));
+
+        RCLCPP_INFO(this->get_logger(), "Node initialized. Saving maps to '%s'", output_directory_.c_str());
         RCLCPP_INFO(this->get_logger(), "Waiting for GP service...");
         gp_client_->wait_for_service();
-        RCLCPP_INFO(this->get_logger(), "Node initialized.");
     }
 
 private:
@@ -75,6 +84,54 @@ private:
     cv::Mat current_std_dev_heatmap_;
     std::map<int, cv::Mat> sample_occlusion_masks_;
     cv::Mat map_image_for_raycasting_;
+
+    cv::Mat latest_mean_map_image_;
+    cv::Mat latest_std_dev_map_image_;
+    std::string output_directory_;
+
+    // Corrected service callback
+    void saveMapsCallback(
+        const std::shared_ptr<rad121_monitor::srv::SaveMaps::Request> request,
+        std::shared_ptr<rad121_monitor::srv::SaveMaps::Response> response)
+    {
+        cv::Mat mean_map_copy, std_dev_map_copy;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            if (latest_mean_map_image_.empty() || latest_std_dev_map_image_.empty())
+            {
+                RCLCPP_WARN(this->get_logger(), "Save request received, but no maps have been generated yet.");
+                response->success = false;
+                response->message = "No heatmaps have been generated yet.";
+                return;
+            }
+            mean_map_copy = latest_mean_map_image_.clone();
+            std_dev_map_copy = latest_std_dev_map_image_.clone();
+        }
+
+        // Use std::filesystem for robust path construction
+        std::filesystem::path dir(output_directory_);
+        std::filesystem::path mean_path = dir / (request->basename + "_mean.png");
+        std::filesystem::path std_dev_path = dir / (request->basename + "_std_dev.png");
+        
+        // Create directory if it doesn't exist
+        std::filesystem::create_directories(dir);
+
+        bool success1 = cv::imwrite(mean_path.string(), mean_map_copy);
+        bool success2 = cv::imwrite(std_dev_path.string(), std_dev_map_copy);
+
+        if (success1 && success2)
+        {
+            response->success = true;
+            response->message = "Saved maps to " + mean_path.string() + " and " + std_dev_path.string();
+            RCLCPP_INFO(this->get_logger(), "%s", response->message.c_str());
+        }
+        else
+        {
+            response->success = false;
+            response->message = "Failed to save one or both maps.";
+            RCLCPP_ERROR(this->get_logger(), "Failed to save maps. Mean success: %d, Std Dev success: %d", success1, success2);
+        }
+    }
 
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
     {
@@ -176,10 +233,10 @@ private:
 
         RCLCPP_INFO(this->get_logger(), "Sending %zu points to GP service.", request->points_to_predict.size());
 
-        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords, map_image_raycasting_copy](rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedFuture future)
-                                       {
+        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords, map_image_raycasting_copy](rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedFuture future) {
             auto response = future.get();
-            if (!response || response->predicted_mean.size() != valid_pixel_coords.size() || response->predicted_std_dev.size() != valid_pixel_coords.size()) {
+            if (!response || response->predicted_mean.size() != valid_pixel_coords.size() || response->predicted_std_dev.size() != valid_pixel_coords.size())
+            {
                 RCLCPP_ERROR(this->get_logger(), "GP service response is invalid or size mismatch.");
                 std::lock_guard<std::mutex> lock(update_mutex_);
                 is_updating_ = false;
@@ -188,26 +245,29 @@ private:
 
             cv::Mat new_raw_heatmap = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
             cv::Mat new_std_dev_heatmap = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-            for (size_t i = 0; i < valid_pixel_coords.size(); ++i) {
+            for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
+            {
                 new_raw_heatmap.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_mean[i];
                 new_std_dev_heatmap.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_std_dev[i];
             }
-            
+
             {
                 std::lock_guard<std::mutex> lock(data_mutex_);
                 current_raw_heatmap_ = new_raw_heatmap;
                 current_std_dev_heatmap_ = new_std_dev_heatmap;
             }
 
-            for (const auto& sample : samples_copy) {
+            for (const auto &sample : samples_copy)
+            {
                 bool is_new_sample;
                 {
                     std::lock_guard<std::mutex> lock(data_mutex_);
                     is_new_sample = (sample_occlusion_masks_.find(sample.id) == sample_occlusion_masks_.end());
                 }
-                
-                if (is_new_sample) {
-                    cv::Mat single_sample_occlusion_mask = 
+
+                if (is_new_sample)
+                {
+                    cv::Mat single_sample_occlusion_mask =
                         generateSingleSampleOcclusionMask(sample, map_image_raycasting_copy, map_copy.info.resolution, map_copy.info.origin.position.x, map_copy.info.origin.position.y);
                     {
                         std::lock_guard<std::mutex> lock(data_mutex_);
@@ -215,7 +275,7 @@ private:
                     }
                 }
             }
-            
+
             cv::Mat base_bgr = createBaseMapImage(map_copy);
 
             // --- Generate and Publish MEAN Heatmap ---
@@ -236,26 +296,32 @@ private:
             heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_image).toImageMsg());
             
             // --- Generate and Publish STD_DEV Heatmap ---
+            cv::Mat std_dev_color_heatmap = createColorHeatmapImage(current_std_dev_heatmap_, 0.0);
+            cv::Mat std_dev_blended_image;
+            cv::addWeighted(base_bgr, 0.6, std_dev_color_heatmap, 0.4, 0.0, std_dev_blended_image);
+
+            double std_dev_min, std_dev_max;
+            cv::minMaxLoc(current_std_dev_heatmap_, &std_dev_min, &std_dev_max);
+            if (std_dev_max <= std_dev_min) std_dev_max = std_dev_min + 0.1;
+
+            addLegendToImage(std_dev_blended_image, std_dev_min, std_dev_max, "Std. Dev.");
+
+            std_msgs::msg::Header std_dev_header;
+            std_dev_header.stamp = this->now();
+            std_dev_header.frame_id = map_frame_;
+            std_dev_heatmap_pub_.publish(*cv_bridge::CvImage(std_dev_header, "bgr8", std_dev_blended_image).toImageMsg());
+            
+            // Store the latest images for the service
             {
-                cv::Mat std_dev_color_heatmap = createColorHeatmapImage(current_std_dev_heatmap_, 0.0);
-                cv::Mat std_dev_blended_image;
-                cv::addWeighted(base_bgr, 0.6, std_dev_color_heatmap, 0.4, 0.0, std_dev_blended_image);
-
-                double std_dev_min, std_dev_max;
-                cv::minMaxLoc(current_std_dev_heatmap_, &std_dev_min, &std_dev_max);
-                if (std_dev_max <= std_dev_min) std_dev_max = std_dev_min + 0.1;
-
-                addLegendToImage(std_dev_blended_image, std_dev_min, std_dev_max, "Std. Dev.");
-                
-                std_msgs::msg::Header std_dev_header;
-                std_dev_header.stamp = this->now();
-                std_dev_header.frame_id = map_frame_;
-                std_dev_heatmap_pub_.publish(*cv_bridge::CvImage(std_dev_header, "bgr8", std_dev_blended_image).toImageMsg());
+                std::lock_guard<std::mutex> lock(data_mutex_);
+                latest_mean_map_image_ = blended_image.clone();
+                latest_std_dev_map_image_ = std_dev_blended_image.clone();
             }
 
             RCLCPP_INFO(this->get_logger(), "Update cycle complete.");
             std::lock_guard<std::mutex> lock(update_mutex_);
-            is_updating_ = false; });
+            is_updating_ = false;
+        });
     }
 
     cv::Mat generateSingleSampleOcclusionMask(const RadiationSample &sample, const cv::Mat &map_image, double res, double origin_x, double origin_y)
@@ -271,25 +337,31 @@ private:
             return mask;
         }
 
-        cv::parallel_for_(cv::Range(0, map_image.rows), [&](const cv::Range &range)
-                          {
-            for (int r = range.start; r < range.end; ++r) {
-                for (int c = 0; c < map_image.cols; ++c) {
-                    if (map_image.at<uchar>(r, c) == 255) continue;
+        cv::parallel_for_(cv::Range(0, map_image.rows), [&](const cv::Range &range) {
+            for (int r = range.start; r < range.end; ++r)
+            {
+                for (int c = 0; c < map_image.cols; ++c)
+                {
+                    if (map_image.at<uchar>(r, c) == 255)
+                        continue;
 
                     cv::LineIterator it(map_image, cv::Point(c, r), cv::Point(sample_px, sample_py));
                     bool blocked = false;
-                    for(int i = 0; i < it.count; ++i, ++it) {
-                        if (map_image.at<uchar>(it.pos()) == 255) {
+                    for (int i = 0; i < it.count; ++i, ++it)
+                    {
+                        if (map_image.at<uchar>(it.pos()) == 255)
+                        {
                             blocked = true;
                             break;
                         }
                     }
-                    if (!blocked) {
+                    if (!blocked)
+                    {
                         mask.at<uchar>(r, c) = 255;
                     }
                 }
-            } });
+            }
+        });
         return mask;
     }
 
@@ -297,32 +369,39 @@ private:
     {
         cv::Mat final_occluded_heatmap = cv::Mat::zeros(raw_heatmap.size(), CV_32F);
 
-        cv::parallel_for_(cv::Range(0, raw_heatmap.rows), [&](const cv::Range &range)
-                          {
-            for (int r = range.start; r < range.end; ++r) {
-                for (int c = 0; c < raw_heatmap.cols; ++c) {
-                    if (map_image.at<uchar>(r, c) == 255) continue;
+        cv::parallel_for_(cv::Range(0, raw_heatmap.rows), [&](const cv::Range &range) {
+            for (int r = range.start; r < range.end; ++r)
+            {
+                for (int c = 0; c < raw_heatmap.cols; ++c)
+                {
+                    if (map_image.at<uchar>(r, c) == 255)
+                        continue;
 
                     float max_visible_rad = 0.0f;
-                    
-                    for (const auto& sample : samples) {
+
+                    for (const auto &sample : samples)
+                    {
                         auto it = occlusion_masks.find(sample.id);
-                        if (it != occlusion_masks.end()) {
-                            const cv::Mat& mask = it->second;
-                            if (mask.at<uchar>(r, c) == 255) { 
+                        if (it != occlusion_masks.end())
+                        {
+                            const cv::Mat &mask = it->second;
+                            if (mask.at<uchar>(r, c) == 255)
+                            {
                                 max_visible_rad = std::max(max_visible_rad, raw_heatmap.at<float>(r, c));
                             }
                         }
                     }
                     final_occluded_heatmap.at<float>(r, c) = max_visible_rad;
                 }
-            } });
+            }
+        });
 
         return final_occluded_heatmap;
     }
-
+    
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
+    rclcpp::Service<rad121_monitor::srv::SaveMaps>::SharedPtr save_maps_service_;
     image_transport::Publisher heatmap_pub_;
     image_transport::Publisher std_dev_heatmap_pub_;
     rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
