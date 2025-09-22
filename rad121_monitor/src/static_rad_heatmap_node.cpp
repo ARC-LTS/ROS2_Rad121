@@ -26,8 +26,8 @@ struct RadiationSample
 };
 cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map);
 cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold);
-void addLegendToImage(cv::Mat &image, double min_val, double max_val);
-
+// MODIFIED: Updated function prototype
+void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std::string &unit_label);
 
 class RadiationHeatmapNode : public rclcpp::Node
 {
@@ -52,7 +52,8 @@ public:
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/rad", 10, std::bind(&RadiationHeatmapNode::radCallback, this, std::placeholders::_1));
 
         image_transport::ImageTransport it(this->shared_from_this());
-        heatmap_pub_ = it.advertise("/rad_heatmap/map", 1);
+        heatmap_pub_ = it.advertise("/rad_heatmap/mean_map", 1);
+        std_dev_heatmap_pub_ = it.advertise("/rad_heatmap/std_dev_map", 1);
 
         gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
         RCLCPP_INFO(this->get_logger(), "Waiting for GP service...");
@@ -71,6 +72,7 @@ private:
     bool is_updating_ = false;
 
     cv::Mat current_raw_heatmap_;
+    cv::Mat current_std_dev_heatmap_;
     std::map<int, cv::Mat> sample_occlusion_masks_;
     cv::Mat map_image_for_raycasting_;
 
@@ -150,16 +152,19 @@ private:
             samples_copy = collected_samples_;
             map_image_raycasting_copy = map_image_for_raycasting_.clone();
         }
-        
+
         auto request = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
         std::vector<std::pair<int, int>> valid_pixel_coords;
         double res = map_copy.info.resolution;
         double origin_x = map_copy.info.origin.position.x;
         double origin_y = map_copy.info.origin.position.y;
 
-        for (unsigned int y = 0; y < map_copy.info.height; ++y) {
-            for (unsigned int x = 0; x < map_copy.info.width; ++x) {
-                if (map_copy.data[y * map_copy.info.width + x] < 50) { 
+        for (unsigned int y = 0; y < map_copy.info.height; ++y)
+        {
+            for (unsigned int x = 0; x < map_copy.info.width; ++x)
+            {
+                if (map_copy.data[y * map_copy.info.width + x] < 50)
+                {
                     geometry_msgs::msg::Point p;
                     p.x = origin_x + (x + 0.5) * res;
                     p.y = origin_y + (y + 0.5) * res;
@@ -168,12 +173,13 @@ private:
                 }
             }
         }
-        
+
         RCLCPP_INFO(this->get_logger(), "Sending %zu points to GP service.", request->points_to_predict.size());
 
-        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords, map_image_raycasting_copy](rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedFuture future) {
+        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords, map_image_raycasting_copy](rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedFuture future)
+                                       {
             auto response = future.get();
-            if (!response || response->predicted_mean.size() != valid_pixel_coords.size()) {
+            if (!response || response->predicted_mean.size() != valid_pixel_coords.size() || response->predicted_std_dev.size() != valid_pixel_coords.size()) {
                 RCLCPP_ERROR(this->get_logger(), "GP service response is invalid or size mismatch.");
                 std::lock_guard<std::mutex> lock(update_mutex_);
                 is_updating_ = false;
@@ -181,13 +187,16 @@ private:
             }
 
             cv::Mat new_raw_heatmap = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+            cv::Mat new_std_dev_heatmap = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
             for (size_t i = 0; i < valid_pixel_coords.size(); ++i) {
                 new_raw_heatmap.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_mean[i];
+                new_std_dev_heatmap.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_std_dev[i];
             }
             
             {
                 std::lock_guard<std::mutex> lock(data_mutex_);
                 current_raw_heatmap_ = new_raw_heatmap;
+                current_std_dev_heatmap_ = new_std_dev_heatmap;
             }
 
             for (const auto& sample : samples_copy) {
@@ -207,10 +216,10 @@ private:
                 }
             }
             
-            cv::Mat final_occluded_heatmap = combineOcclusionMasks(current_raw_heatmap_, samples_copy, sample_occlusion_masks_, map_image_raycasting_copy);
-
             cv::Mat base_bgr = createBaseMapImage(map_copy);
-            
+
+            // --- Generate and Publish MEAN Heatmap ---
+            cv::Mat final_occluded_heatmap = combineOcclusionMasks(current_raw_heatmap_, samples_copy, sample_occlusion_masks_, map_image_raycasting_copy);
             cv::Mat color_heatmap = createColorHeatmapImage(final_occluded_heatmap, background_threshold_mrem_hr_);
             cv::Mat blended_image;
             cv::addWeighted(base_bgr, 0.6, color_heatmap, 0.4, 0.0, blended_image);
@@ -219,31 +228,51 @@ private:
             cv::minMaxLoc(final_occluded_heatmap, &min_val, &max_val);
             if (max_val < background_threshold_mrem_hr_) max_val = background_threshold_mrem_hr_ + 0.1;
             if (min_val >= max_val) min_val = max_val - 0.1;
-            addLegendToImage(blended_image, min_val, max_val);
+            addLegendToImage(blended_image, min_val, max_val, "mrem/hr");
 
             std_msgs::msg::Header h;
             h.stamp = this->now();
             h.frame_id = map_frame_;
             heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_image).toImageMsg());
             
+            // --- Generate and Publish STD_DEV Heatmap ---
+            {
+                cv::Mat std_dev_color_heatmap = createColorHeatmapImage(current_std_dev_heatmap_, 0.0);
+                cv::Mat std_dev_blended_image;
+                cv::addWeighted(base_bgr, 0.6, std_dev_color_heatmap, 0.4, 0.0, std_dev_blended_image);
+
+                double std_dev_min, std_dev_max;
+                cv::minMaxLoc(current_std_dev_heatmap_, &std_dev_min, &std_dev_max);
+                if (std_dev_max <= std_dev_min) std_dev_max = std_dev_min + 0.1;
+
+                addLegendToImage(std_dev_blended_image, std_dev_min, std_dev_max, "Std. Dev.");
+                
+                std_msgs::msg::Header std_dev_header;
+                std_dev_header.stamp = this->now();
+                std_dev_header.frame_id = map_frame_;
+                std_dev_heatmap_pub_.publish(*cv_bridge::CvImage(std_dev_header, "bgr8", std_dev_blended_image).toImageMsg());
+            }
+
             RCLCPP_INFO(this->get_logger(), "Update cycle complete.");
             std::lock_guard<std::mutex> lock(update_mutex_);
-            is_updating_ = false;
-        });
+            is_updating_ = false; });
     }
 
-    cv::Mat generateSingleSampleOcclusionMask(const RadiationSample& sample, const cv::Mat& map_image, double res, double origin_x, double origin_y) {
+    cv::Mat generateSingleSampleOcclusionMask(const RadiationSample &sample, const cv::Mat &map_image, double res, double origin_x, double origin_y)
+    {
         cv::Mat mask = cv::Mat::zeros(map_image.size(), CV_8UC1);
-        
+
         int sample_px = static_cast<int>((sample.x - origin_x) / res);
         int sample_py = static_cast<int>((sample.y - origin_y) / res);
 
-        if (sample_px < 0 || sample_px >= map_image.cols || sample_py < 0 || sample_py >= map_image.rows) {
+        if (sample_px < 0 || sample_px >= map_image.cols || sample_py < 0 || sample_py >= map_image.rows)
+        {
             RCLCPP_WARN(this->get_logger(), "Sample (%.2f, %.2f) is outside map boundaries, cannot generate occlusion mask.", sample.x, sample.y);
             return mask;
         }
 
-        cv::parallel_for_(cv::Range(0, map_image.rows), [&](const cv::Range& range){
+        cv::parallel_for_(cv::Range(0, map_image.rows), [&](const cv::Range &range)
+                          {
             for (int r = range.start; r < range.end; ++r) {
                 for (int c = 0; c < map_image.cols; ++c) {
                     if (map_image.at<uchar>(r, c) == 255) continue;
@@ -260,15 +289,16 @@ private:
                         mask.at<uchar>(r, c) = 255;
                     }
                 }
-            }
-        });
+            } });
         return mask;
     }
 
-    cv::Mat combineOcclusionMasks(const cv::Mat& raw_heatmap, const std::vector<RadiationSample>& samples, const std::map<int, cv::Mat>& occlusion_masks, const cv::Mat& map_image) {
+    cv::Mat combineOcclusionMasks(const cv::Mat &raw_heatmap, const std::vector<RadiationSample> &samples, const std::map<int, cv::Mat> &occlusion_masks, const cv::Mat &map_image)
+    {
         cv::Mat final_occluded_heatmap = cv::Mat::zeros(raw_heatmap.size(), CV_32F);
 
-        cv::parallel_for_(cv::Range(0, raw_heatmap.rows), [&](const cv::Range& range){
+        cv::parallel_for_(cv::Range(0, raw_heatmap.rows), [&](const cv::Range &range)
+                          {
             for (int r = range.start; r < range.end; ++r) {
                 for (int c = 0; c < raw_heatmap.cols; ++c) {
                     if (map_image.at<uchar>(r, c) == 255) continue;
@@ -286,15 +316,15 @@ private:
                     }
                     final_occluded_heatmap.at<float>(r, c) = max_visible_rad;
                 }
-            }
-        });
+            } });
 
         return final_occluded_heatmap;
     }
-    
+
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     image_transport::Publisher heatmap_pub_;
+    image_transport::Publisher std_dev_heatmap_pub_;
     rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -304,14 +334,20 @@ private:
     double raycasting_update_radius_m_;
 };
 
-cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map) {
+cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map)
+{
     cv::Mat base_gray(map.info.height, map.info.width, CV_8UC1);
-    for (unsigned int y = 0; y < map.info.height; ++y) {
-        for (unsigned int x = 0; x < map.info.width; ++x) {
+    for (unsigned int y = 0; y < map.info.height; ++y)
+    {
+        for (unsigned int x = 0; x < map.info.width; ++x)
+        {
             int8_t o = map.data[y * map.info.width + x];
-            if (o == -1) base_gray.at<uchar>(y, x) = 205;
-            else if (o >= 50) base_gray.at<uchar>(y, x) = 0;
-            else base_gray.at<uchar>(y, x) = 255;
+            if (o == -1)
+                base_gray.at<uchar>(y, x) = 205;
+            else if (o >= 50)
+                base_gray.at<uchar>(y, x) = 0;
+            else
+                base_gray.at<uchar>(y, x) = 255;
         }
     }
     cv::Mat bgr;
@@ -319,14 +355,17 @@ cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map) {
     return bgr;
 }
 
-cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold) {
+cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold)
+{
     double min_val, max_val;
     cv::minMaxLoc(field, &min_val, &max_val);
-    if (max_val < threshold) max_val = threshold + 0.1;
+    if (max_val < threshold)
+        max_val = threshold + 0.1;
 
     cv::Mat scaled_field;
     double range = max_val - min_val;
-    if (range <= 1e-6) range = 1.0;
+    if (range <= 1e-6)
+        range = 1.0;
 
     field.convertTo(scaled_field, CV_8UC1, 255.0 / range, -255.0 * min_val / range);
     cv::Mat color_field;
@@ -338,7 +377,7 @@ cv::Mat createColorHeatmapImage(const cv::Mat &field, double threshold) {
     return color_field;
 }
 
-void addLegendToImage(cv::Mat &image, double min_val, double max_val)
+void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std::string &unit_label)
 {
     int border_width = 150;
     cv::copyMakeBorder(image, image, 0, 0, 0, border_width, cv::BORDER_CONSTANT, cv::Scalar(255, 255, 255));
@@ -363,7 +402,7 @@ void addLegendToImage(cv::Mat &image, double min_val, double max_val)
     legend_bar.copyTo(image(cv::Rect(legend_x, legend_y, legend_width, legend_height)));
 
     int text_x = legend_x + legend_width + 10;
-    cv::putText(image, "mrem/hr", cv::Point(legend_x, legend_y - 10),
+    cv::putText(image, unit_label, cv::Point(legend_x, legend_y - 10),
                 cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 0), 2);
     cv::putText(image, cv::format("%.2f", max_val), cv::Point(text_x, legend_y + 15),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 2);
