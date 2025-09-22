@@ -19,7 +19,7 @@
 #include <future>
 #include <opencv2/opencv.hpp>
 #include <map>
-#include <filesystem> // ADDED: Required for std::filesystem
+#include <filesystem>
 
 struct RadiationSample
 {
@@ -89,7 +89,6 @@ private:
     cv::Mat latest_std_dev_map_image_;
     std::string output_directory_;
 
-    // Corrected service callback
     void saveMapsCallback(
         const std::shared_ptr<rad121_monitor::srv::SaveMaps::Request> request,
         std::shared_ptr<rad121_monitor::srv::SaveMaps::Response> response)
@@ -108,12 +107,9 @@ private:
             std_dev_map_copy = latest_std_dev_map_image_.clone();
         }
 
-        // Use std::filesystem for robust path construction
         std::filesystem::path dir(output_directory_);
         std::filesystem::path mean_path = dir / (request->basename + "_mean.png");
         std::filesystem::path std_dev_path = dir / (request->basename + "_std_dev.png");
-        
-        // Create directory if it doesn't exist
         std::filesystem::create_directories(dir);
 
         bool success1 = cv::imwrite(mean_path.string(), mean_map_copy);
@@ -278,7 +274,6 @@ private:
 
             cv::Mat base_bgr = createBaseMapImage(map_copy);
 
-            // --- Generate and Publish MEAN Heatmap ---
             cv::Mat final_occluded_heatmap = combineOcclusionMasks(current_raw_heatmap_, samples_copy, sample_occlusion_masks_, map_image_raycasting_copy);
             cv::Mat color_heatmap = createColorHeatmapImage(final_occluded_heatmap, background_threshold_mrem_hr_);
             cv::Mat blended_image;
@@ -295,7 +290,6 @@ private:
             h.frame_id = map_frame_;
             heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_image).toImageMsg());
             
-            // --- Generate and Publish STD_DEV Heatmap ---
             cv::Mat std_dev_color_heatmap = createColorHeatmapImage(current_std_dev_heatmap_, 0.0);
             cv::Mat std_dev_blended_image;
             cv::addWeighted(base_bgr, 0.6, std_dev_color_heatmap, 0.4, 0.0, std_dev_blended_image);
@@ -311,7 +305,6 @@ private:
             std_dev_header.frame_id = map_frame_;
             std_dev_heatmap_pub_.publish(*cv_bridge::CvImage(std_dev_header, "bgr8", std_dev_blended_image).toImageMsg());
             
-            // Store the latest images for the service
             {
                 std::lock_guard<std::mutex> lock(data_mutex_);
                 latest_mean_map_image_ = blended_image.clone();
@@ -398,7 +391,7 @@ private:
 
         return final_occluded_heatmap;
     }
-    
+
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Service<rad121_monitor::srv::SaveMaps>::SharedPtr save_maps_service_;

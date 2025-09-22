@@ -12,7 +12,7 @@ rad_heatmap_node:
 
     # Image processing parameters
     gaussian_sigma: 5.0
-    gaussian_blur_size: 15  # must be odd
+    gaussian_blur_size: 9  # must be odd
     
     # New parameter for controlling the real-time error map
     error_map_update_frequency: 1.0 # In Hz

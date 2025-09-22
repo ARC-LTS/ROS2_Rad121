@@ -5,6 +5,8 @@ import os
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('rad121_monitor')
+
+    param_file = os.path.join(pkg_share, 'params', 'heatmap.yaml')
     
     # IMPORTANT: Update this to the correct path for your .pkl file!
     model_file_path = os.path.join(pkg_share, 'models', 'gp_model.pkl')
@@ -19,8 +21,8 @@ def generate_launch_description():
     static_heatmap_node = Node(
         package='rad121_monitor',
         executable='static_rad_heatmap_node',
-        name='static_rad_heatmap_node',
-        parameters=[{'use_sim_time': True}],
+        name='rad_heatmap_node',
+        parameters=[{'use_sim_time': True}, param_file],
         output='screen'
     )
 
