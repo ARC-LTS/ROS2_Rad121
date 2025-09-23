@@ -9,13 +9,11 @@ rad_heatmap_node:
     min_valid_mrem: 0.4
     min_sample_mrem: 0.0
     background_threshold_mrem_hr: 0.0
+    recent_samples_window_size: 10
 
     # Image processing parameters
     gaussian_sigma: 5.0
     gaussian_blur_size: 9  # must be odd
-    
-    # New parameter for controlling the real-time error map
-    error_map_update_frequency: 1.0 # In Hz
 
 # Parameters for other nodes remain unchanged
 rad_mapper_node:

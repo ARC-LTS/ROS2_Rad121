@@ -45,25 +45,25 @@ add_executable(rad121_monitor_node src/rad121_monitor_node.cpp src/CUSB_RAD121.c
 ament_target_dependencies(rad121_monitor_node rclcpp std_msgs)
 target_link_libraries(rad121_monitor_node ${LIBFTDI_LIBRARIES})
 
-#add_executable(rad_heatmap_node src/rad_heatmap_node.cpp)
-#ament_target_dependencies(rad_heatmap_node
-#  rclcpp
-#  cv_bridge
-#  sensor_msgs
-#  image_transport
-#  std_msgs
-#  std_srvs
-#  nav_msgs
-#  tf2
-#  tf2_ros
-#  tf2_geometry_msgs
-#  visualization_msgs
-#)
-#target_link_libraries(rad_heatmap_node
-#  ${OpenCV_LIBRARIES}
-#  yaml-cpp
-#  ${PROJECT_NAME}__rosidl_typesupport_cpp
-#)
+add_executable(rad_heatmap_node src/rad_heatmap_node.cpp)
+ament_target_dependencies(rad_heatmap_node
+  rclcpp
+  cv_bridge
+  sensor_msgs
+  image_transport
+  std_msgs
+  std_srvs
+  nav_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  visualization_msgs
+)
+target_link_libraries(rad_heatmap_node
+  ${OpenCV_LIBRARIES}
+  yaml-cpp
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
+)
 
 add_executable(static_rad_heatmap_node src/static_rad_heatmap_node.cpp)
 ament_target_dependencies(static_rad_heatmap_node
@@ -128,7 +128,7 @@ ament_target_dependencies(rad_mapper_node
 
 install(TARGETS
   rad121_monitor_node
-  #rad_heatmap_node
+  rad_heatmap_node
   static_rad_heatmap_node
   rad_mapper_node
   rad_pointcloud_node

@@ -1,7 +1,7 @@
 import pickle
 import numpy as np
 
-model_path = '/home/brendoncintas/radmon_ws/install/rad121_monitor/share/rad121_monitor/models/gp_model.pkl'
+model_path = './gp_model.pkl'
 
 print(f"\n--- Deep inspection of: {model_path} ---\n")
 
