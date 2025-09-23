@@ -101,11 +101,17 @@ private:
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        if (map_received_) return; // Only process the first map received
-        
-        RCLCPP_INFO(this->get_logger(), "Map received! Ready to save images.");
+
+        // Always update to the latest map data
         map_data_ = *msg;
-        map_received_ = true;
+
+        // We still use the flag, but now it only prevents the log message from repeating.
+        // This ensures the "Ready" message is printed only once.
+        if (!map_received_)
+        {
+            RCLCPP_INFO(this->get_logger(), "Map received! Ready to save images.");
+            map_received_ = true;
+        }
     }
 
     void publishMarkers()
@@ -149,15 +155,19 @@ private:
         }
         
         // 1. Convert ROS OccupancyGrid to a grayscale OpenCV image
-        cv::Mat map_image_gray(map_data_.info.height, map_data_.info.width, CV_8UC1);
+       cv::Mat map_image_gray(map_data_.info.height, map_data_.info.width, CV_8UC1);
         for (unsigned int y = 0; y < map_data_.info.height; y++) {
+            // This is the row in the ROS map data, from the bottom-left origin
             for (unsigned int x = 0; x < map_data_.info.width; x++) {
+                // This is the row in the OpenCV image, from the top-left origin
+                unsigned int image_y = map_data_.info.height - 1 - y;
+
                 int8_t occupancy = map_data_.data[y * map_data_.info.width + x];
                 if (occupancy == -1) {
-                    map_image_gray.at<uchar>(y, x) = 205; // Unknown space (gray)
+                    map_image_gray.at<uchar>(image_y, x) = 205; // Unknown space (gray)
                 } else {
                     // Invert: higher occupancy (darker) -> lower pixel value (black)
-                    map_image_gray.at<uchar>(y, x) = static_cast<uchar>(255 - (occupancy * 2.55));
+                    map_image_gray.at<uchar>(image_y, x) = static_cast<uchar>(255 - (occupancy * 2.55));
                 }
             }
         }
