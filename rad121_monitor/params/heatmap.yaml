@@ -5,18 +5,23 @@ rad_heatmap_node:
     map_frame: "map"
     output_directory: "/home/brendoncintas/radmon_ws/data/" # Changed from output_file
 
-    # Sample filtering parameters
     min_valid_mrem: 0.4
     min_sample_mrem: 0.0
     background_threshold_mrem_hr: 0.0
     recent_samples_window_size: 30
+    raycasting_max_sources: 5
+    raycasting_max_distance_m: 20.0
 
-    # Image processing parameters
     gaussian_sigma: 15.0
     gaussian_blur_size: 3  # must be odd
 
-# Parameters for other nodes remain unchanged
 rad_mapper_node:
   ros__parameters:
     target_frame: "base_link"
     source_frame: "odom"
+
+gp_predictor_node:
+  ros__parameters:
+    kernel:
+      type: "Matern52"
+      lengthscale: 5.0 # You can tune this value

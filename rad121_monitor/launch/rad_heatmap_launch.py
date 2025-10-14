@@ -27,9 +27,9 @@ def generate_launch_description():
     gp_prediction_server_node = Node(
         package='rad121_monitor',
         executable='gp_predictor_node.py', # The executable Python script
-        name='gp_prediction_server',
+        name='gp_predictor_node',
         output='screen',
-        parameters=[{'model_path': model_file_path}] # Set the model_path parameter
+        parameters=[{'model_path': model_file_path}, {param_file}] # Set the model_path parameter
     )
 
     # The launch description now returns BOTH nodes

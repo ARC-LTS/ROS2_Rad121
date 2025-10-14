@@ -21,6 +21,7 @@
 #include <opencv2/opencv.hpp>
 #include <map>
 #include <filesystem>
+#include <queue>
 
 struct RadiationSample
 {
@@ -45,12 +46,16 @@ public:
         this->declare_parameter<double>("background_threshold_mrem_hr", 0.1);
         this->declare_parameter<int>("recent_samples_window_size", 20);
         this->declare_parameter<std::string>("output_directory", "/tmp");
+        this->declare_parameter<int>("raycasting_max_sources", 5);
+        this->declare_parameter<double>("raycasting_max_distance_m", 10.0);
 
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
         background_threshold_mrem_hr_ = this->get_parameter("background_threshold_mrem_hr").as_double();
         recent_samples_window_size_ = this->get_parameter("recent_samples_window_size").as_int();
         output_directory_ = this->get_parameter("output_directory").as_string();
+        raycasting_max_sources_ = this->get_parameter("raycasting_max_sources").as_int();
+        raycasting_max_distance_m_ = this->get_parameter("raycasting_max_distance_m").as_double();
 
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(), std::bind(&DynamicRadiationHeatmapNode::mapCallback, this, std::placeholders::_1));
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/rad", 10, std::bind(&DynamicRadiationHeatmapNode::radCallback, this, std::placeholders::_1));
@@ -68,22 +73,24 @@ public:
         save_maps_service_ = this->create_service<rad121_monitor::srv::SaveMaps>(
             "save_rad_maps",
             std::bind(&DynamicRadiationHeatmapNode::saveMapsCallback, this, std::placeholders::_1, std::placeholders::_2));
-        
+
         RCLCPP_INFO(this->get_logger(), "Node initialized. Saving maps to '%s'", output_directory_.c_str());
         RCLCPP_INFO(this->get_logger(), "Waiting for GP service 'predict_gp'...");
-        if (!gp_client_->wait_for_service(std::chrono::seconds(10))) {
-             RCLCPP_ERROR(this->get_logger(), "GP service not available after waiting. Exiting.");
-             if (rclcpp::ok()) {
+        if (!gp_client_->wait_for_service(std::chrono::seconds(10)))
+        {
+            RCLCPP_ERROR(this->get_logger(), "GP service not available after waiting. Exiting.");
+            if (rclcpp::ok())
+            {
                 rclcpp::shutdown();
-             }
-             return;
+            }
+            return;
         }
         RCLCPP_INFO(this->get_logger(), "GP service is available. Node is ready.");
     }
 
 private:
     // --- Member Variables ---
-    
+
     // Mutexes for thread-safe access to shared data
     std::mutex data_mutex_;
     std::mutex update_mutex_;
@@ -92,12 +99,12 @@ private:
     bool map_received_ = false;
     bool is_updating_ = false;
     int next_sample_id_ = 0;
-    
+
     // Data Storage
     nav_msgs::msg::OccupancyGrid base_map_;
     std::vector<RadiationSample> historical_samples_;
     std::deque<RadiationSample> recent_samples_;
-    
+
     // OpenCV Mats for image processing and storage
     cv::Mat map_image_for_raycasting_;
     cv::Mat latest_historical_mean_image_;
@@ -110,7 +117,7 @@ private:
     image_transport::Publisher historical_heatmap_pub_, instantaneous_heatmap_pub_;
     image_transport::Publisher historical_std_dev_pub_, instantaneous_std_dev_pub_;
     rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
-    
+
     // TF2 for coordinate transformations
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -119,6 +126,8 @@ private:
     std::string sensor_frame_, map_frame_, output_directory_;
     double background_threshold_mrem_hr_;
     size_t recent_samples_window_size_;
+    int raycasting_max_sources_;
+    double raycasting_max_distance_m_;
 
     // --- Service and Topic Callbacks ---
 
@@ -147,11 +156,14 @@ private:
         bool success1 = cv::imwrite(mean_path.string(), mean_map_copy);
         bool success2 = cv::imwrite(std_dev_path.string(), std_dev_map_copy);
 
-        if (success1 && success2) {
+        if (success1 && success2)
+        {
             response->success = true;
             response->message = "Saved maps to " + mean_path.string() + " and " + std_dev_path.string();
             RCLCPP_INFO(this->get_logger(), "%s", response->message.c_str());
-        } else {
+        }
+        else
+        {
             response->success = false;
             response->message = "Failed to save one or both maps.";
             RCLCPP_ERROR(this->get_logger(), "Failed to save maps. Mean success: %d, Std Dev success: %d", success1, success2);
@@ -165,7 +177,8 @@ private:
         map_received_ = true;
         // Pre-process the map into a binary image for faster raycasting
         map_image_for_raycasting_ = cv::Mat(base_map_.info.height, base_map_.info.width, CV_8UC1);
-        for (unsigned int i = 0; i < base_map_.data.size(); ++i) {
+        for (unsigned int i = 0; i < base_map_.data.size(); ++i)
+        {
             map_image_for_raycasting_.data[i] = (base_map_.data[i] > 50) ? 255 : 0; // 255=Wall, 0=Free
         }
         RCLCPP_INFO(this->get_logger(), "Map has been updated and stored.");
@@ -173,9 +186,11 @@ private:
 
     void radCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
     {
-        if (!map_received_ || msg->data.size() < 2) return;
+        if (!map_received_ || msg->data.size() < 2)
+            return;
 
-        try {
+        try
+        {
             geometry_msgs::msg::PoseStamped pose_in_sensor, pose_in_map;
             pose_in_sensor.header.frame_id = sensor_frame_;
             pose_in_sensor.header.stamp = this->get_clock()->now();
@@ -186,14 +201,16 @@ private:
                 RadiationSample sample = {pose_in_map.pose.position.x, pose_in_map.pose.position.y, msg->data[1], next_sample_id_++};
                 historical_samples_.push_back(sample);
                 recent_samples_.push_back(sample);
-                if (recent_samples_.size() > recent_samples_window_size_) {
+                if (recent_samples_.size() > recent_samples_window_size_)
+                {
                     recent_samples_.pop_front();
                 }
             }
-            RCLCPP_INFO(this->get_logger(), "New radiation sample logged. Triggering GP update.");
+            RCLCPP_DEBUG(this->get_logger(), "New radiation sample logged. Triggering GP update.");
             triggerGPUpdate();
-
-        } catch (const tf2::TransformException &ex) {
+        }
+        catch (const tf2::TransformException &ex)
+        {
             RCLCPP_WARN(this->get_logger(), "TF Error for logging sample: %s", ex.what());
         }
     }
@@ -204,7 +221,8 @@ private:
     {
         { // Lock scope to prevent concurrent updates
             std::lock_guard<std::mutex> lock(update_mutex_);
-            if (is_updating_) {
+            if (is_updating_)
+            {
                 RCLCPP_INFO(this->get_logger(), "Update already in progress. Skipping trigger.");
                 return;
             }
@@ -218,7 +236,8 @@ private:
 
         { // Lock scope to safely copy shared data
             std::lock_guard<std::mutex> lock(data_mutex_);
-            if (map_received_ && !historical_samples_.empty()) {
+            if (map_received_ && !historical_samples_.empty())
+            {
                 can_update = true;
                 map_copy = base_map_;
                 raycasting_map_copy = map_image_for_raycasting_.clone();
@@ -227,7 +246,8 @@ private:
             }
         }
 
-        if (!can_update) {
+        if (!can_update)
+        {
             std::lock_guard<std::mutex> lock(update_mutex_);
             is_updating_ = false;
             RCLCPP_WARN(this->get_logger(), "Map not received or no samples, cannot update.");
@@ -236,14 +256,16 @@ private:
 
         // Prepare two separate requests: one for all historical data, one for recent data
         auto request_hist = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
-        for (const auto& s : hist_samples_copy) {
+        for (const auto &s : hist_samples_copy)
+        {
             request_hist->observed_x.push_back(s.x);
             request_hist->observed_y.push_back(s.y);
             request_hist->observed_values_mean.push_back(s.value);
         }
 
         auto request_inst = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
-        for (const auto& s : inst_samples_copy) {
+        for (const auto &s : inst_samples_copy)
+        {
             request_inst->observed_x.push_back(s.x);
             request_inst->observed_y.push_back(s.y);
             request_inst->observed_values_mean.push_back(s.value);
@@ -255,9 +277,12 @@ private:
         double res = map_copy.info.resolution;
         double origin_x = map_copy.info.origin.position.x;
         double origin_y = map_copy.info.origin.position.y;
-        for (unsigned int y = 0; y < map_copy.info.height; ++y) {
-            for (unsigned int x = 0; x < map_copy.info.width; ++x) {
-                if (map_copy.data[y * map_copy.info.width + x] < 50) { // Free space
+        for (unsigned int y = 0; y < map_copy.info.height; ++y)
+        {
+            for (unsigned int x = 0; x < map_copy.info.width; ++x)
+            {
+                if (map_copy.data[y * map_copy.info.width + x] < 50)
+                { // Free space
                     geometry_msgs::msg::Point p;
                     p.x = origin_x + (x + 0.5) * res;
                     p.y = origin_y + (y + 0.5) * res;
@@ -268,114 +293,162 @@ private:
         }
         request_hist->points_to_predict = points_to_predict;
         request_inst->points_to_predict = points_to_predict;
-        
+
         RCLCPP_INFO(this->get_logger(), "Sending requests: Historical (%zu samples), Instantaneous (%zu samples). Predicting for %zu points.",
-            hist_samples_copy.size(), inst_samples_copy.size(), valid_pixel_coords.size());
+                    hist_samples_copy.size(), inst_samples_copy.size(), valid_pixel_coords.size());
 
         auto future_hist = gp_client_->async_send_request(request_hist);
         auto future_inst = gp_client_->async_send_request(request_inst);
-        
+
         // Detach a thread to handle the service responses and heavy processing,
         // preventing the main ROS executor from being blocked.
-        std::thread([this, future_hist = std::move(future_hist), future_inst = std::move(future_inst), 
-                     map_copy, raycasting_map_copy, valid_pixel_coords, hist_samples_copy, inst_samples_copy]() mutable {
-            
-            try {
-                auto response_hist = future_hist.get();
-                auto response_inst = future_inst.get();
+        std::thread([this, future_hist = std::move(future_hist), future_inst = std::move(future_inst),
+                     map_copy, raycasting_map_copy, valid_pixel_coords, hist_samples_copy, inst_samples_copy]() mutable
+                    {
+                        try
+                        {
+                            auto response_hist = future_hist.get();
+                            auto response_inst = future_inst.get();
 
-                cv::Mat hist_mean_raw, hist_std_raw, inst_mean_raw, inst_std_raw;
+                            cv::Mat hist_mean_raw, hist_std_raw, inst_mean_raw, inst_std_raw;
 
-                if (response_hist && response_hist->predicted_mean.size() == valid_pixel_coords.size()) {
-                    hist_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                    hist_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                    for (size_t i = 0; i < valid_pixel_coords.size(); ++i) {
-                        hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_mean[i];
-                        hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_std_dev[i];
-                    }
-                } else {
-                     RCLCPP_ERROR(this->get_logger(), "Historical GP response invalid or size mismatch!");
-                }
+                            if (response_hist && response_hist->predicted_mean.size() == valid_pixel_coords.size())
+                            {
+                                hist_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                                hist_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                                for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
+                                {
+                                    hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_mean[i];
+                                    hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_std_dev[i];
+                                }
+                            }
+                            else
+                            {
+                                RCLCPP_ERROR(this->get_logger(), "Historical GP response invalid or size mismatch!");
+                            }
 
-                if (response_inst && response_inst->predicted_mean.size() == valid_pixel_coords.size()) {
-                    inst_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                    inst_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                    for (size_t i = 0; i < valid_pixel_coords.size(); ++i) {
-                        inst_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_mean[i];
-                        inst_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_std_dev[i];
-                    }
-                } else {
-                     RCLCPP_ERROR(this->get_logger(), "Instantaneous GP response invalid or size mismatch!");
-                }
-                
-                RCLCPP_INFO(this->get_logger(), "Both GP responses received. Applying occlusion...");
-                
-                // Apply raycasting to hide predictions in areas occluded by walls
-                cv::Mat hist_mean_occluded = applyOcclusion(hist_mean_raw, hist_samples_copy, map_copy, raycasting_map_copy);
-                cv::Mat inst_mean_occluded = applyOcclusion(inst_mean_raw, inst_samples_copy, map_copy, raycasting_map_copy);
-                cv::Mat hist_std_occluded = applyOcclusion(hist_std_raw, hist_samples_copy, map_copy, raycasting_map_copy);
-                cv::Mat inst_std_occluded = applyOcclusion(inst_std_raw, inst_samples_copy, map_copy, raycasting_map_copy);
+                            if (response_inst && response_inst->predicted_mean.size() == valid_pixel_coords.size())
+                            {
+                                inst_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                                inst_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                                for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
+                                {
+                                    inst_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_mean[i];
+                                    inst_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_std_dev[i];
+                                }
+                            }
+                            else
+                            {
+                                RCLCPP_ERROR(this->get_logger(), "Instantaneous GP response invalid or size mismatch!");
+                            }
 
-                publishHeatmaps(hist_mean_occluded, inst_mean_occluded, hist_std_occluded, inst_std_occluded, map_copy);
-            } catch (const std::exception &e) {
-                RCLCPP_ERROR(this->get_logger(), "Exception caught in GP update thread: %s", e.what());
-            }
-            
-            std::lock_guard<std::mutex> lock(update_mutex_);
-            is_updating_ = false;
-            RCLCPP_INFO(this->get_logger(), "Update cycle complete.");
-        }).detach();
+                            RCLCPP_INFO(this->get_logger(), "Both GP responses received. Applying occlusion...");
+
+                            // Apply raycasting to hide predictions in areas occluded by walls
+                            cv::Mat hist_mean_occluded = applyOcclusionFloodFill(hist_mean_raw, hist_samples_copy, map_copy, raycasting_map_copy);
+                            cv::Mat inst_mean_occluded = applyOcclusionFloodFill(inst_mean_raw, inst_samples_copy, map_copy, raycasting_map_copy);
+                            cv::Mat hist_std_occluded = applyOcclusionFloodFill(hist_std_raw, hist_samples_copy, map_copy, raycasting_map_copy);
+                            cv::Mat inst_std_occluded = applyOcclusionFloodFill(inst_std_raw, inst_samples_copy, map_copy, raycasting_map_copy);
+
+                            publishHeatmaps(hist_mean_occluded, inst_mean_occluded, hist_std_occluded, inst_std_occluded, map_copy);
+                        }
+                        catch (const std::exception &e)
+                        {
+                            RCLCPP_ERROR(this->get_logger(), "Exception caught in GP update thread: %s", e.what());
+                        }
+
+                        std::lock_guard<std::mutex> lock(update_mutex_);
+                        is_updating_ = false;
+                        RCLCPP_INFO(this->get_logger(), "Update cycle complete.");
+                    })
+            .detach();
     }
 
     // --- Helper and Visualization Functions ---
 
-    cv::Mat applyOcclusion(const cv::Mat& raw_heatmap, const std::vector<RadiationSample>& sources,
-                           const nav_msgs::msg::OccupancyGrid& map_info, const cv::Mat& raycasting_map)
+    /**
+     * @brief Applies occlusion using a more efficient flood-fill (BFS) approach.
+     *
+     * Instead of raycasting from every pixel to every source, this method starts a
+     * breadth-first search from each source location, expanding outwards until it hits
+     * a wall or the maximum configured distance. All visited pixels are marked as
+     * visible. This avoids redundant checks and is significantly faster.
+     */
+    cv::Mat applyOcclusionFloodFill(const cv::Mat &raw_heatmap, const std::vector<RadiationSample> &sources,
+                                    const nav_msgs::msg::OccupancyGrid &map_info, const cv::Mat &raycasting_map)
     {
         if (raw_heatmap.empty() || sources.empty()) return cv::Mat::zeros(raw_heatmap.size(), raw_heatmap.type());
-        
-        cv::Mat occluded_heatmap = cv::Mat::zeros(raw_heatmap.size(), raw_heatmap.type());
 
+        cv::Mat occluded_heatmap = cv::Mat::zeros(raw_heatmap.size(), raw_heatmap.type());
+        cv::Mat visible_mask = cv::Mat::zeros(raw_heatmap.size(), CV_8U);
+
+        // Determine the effective sources to use (the N most recent ones)
+        std::vector<RadiationSample> effective_sources;
+        if (sources.size() > static_cast<size_t>(raycasting_max_sources_))
+        {
+            effective_sources.assign(sources.end() - raycasting_max_sources_, sources.end());
+        }
+        else
+        {
+            effective_sources = sources;
+        }
+
+        // Convert world coordinates of sources to map pixel coordinates
         std::vector<cv::Point> source_pixels;
         double res = map_info.info.resolution;
         double origin_x = map_info.info.origin.position.x;
         double origin_y = map_info.info.origin.position.y;
-        for(const auto& source : sources) {
+        for (const auto &source : effective_sources)
+        {
             int px = static_cast<int>((source.x - origin_x) / res);
             int py = static_cast<int>((source.y - origin_y) / res);
-            if (px >= 0 && px < raycasting_map.cols && py >= 0 && py < raycasting_map.rows) {
+            if (px >= 0 && px < raycasting_map.cols && py >= 0 && py < raycasting_map.rows)
+            {
                 source_pixels.push_back(cv::Point(px, py));
             }
         }
-
         if (source_pixels.empty()) return occluded_heatmap;
 
-        cv::parallel_for_(cv::Range(0, raw_heatmap.rows), [&](const cv::Range &range) {
-            for (int r = range.start; r < range.end; ++r) {
-                for (int c = 0; c < raw_heatmap.cols; ++c) {
-                    if (raycasting_map.at<uchar>(r, c) == 255) continue; 
+        // Run BFS from each source to find all visible pixels within range
+        for (const auto &start_node : source_pixels)
+        {
+            std::queue<cv::Point> q;
+            cv::Mat visited = cv::Mat::zeros(raw_heatmap.size(), CV_8U);
 
-                    for (const auto& source_px : source_pixels) {
-                        cv::LineIterator it(raycasting_map, cv::Point(c, r), source_px);
-                        bool blocked = false;
-                        for(int i = 0; i < it.count; ++i, ++it) {
-                            if (raycasting_map.at<uchar>(it.pos()) == 255) {
-                                blocked = true;
-                                break;
-                            }
-                        }
-                        if (!blocked) {
-                            occluded_heatmap.at<float>(r, c) = raw_heatmap.at<float>(r, c);
-                            break; 
-                        }
-                    }
+            q.push(start_node);
+            visited.at<uchar>(start_node) = 1;
+
+            while (!q.empty())
+            {
+                cv::Point current = q.front();
+                q.pop();
+                visible_mask.at<uchar>(current) = 255; // Mark as visible
+
+                // Explore neighbors (4-way connectivity)
+                const cv::Point neighbors[] = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
+                for (const auto &offset : neighbors)
+                {
+                    cv::Point next = current + offset;
+
+                    if (next.x < 0 || next.x >= raycasting_map.cols || next.y < 0 || next.y >= raycasting_map.rows) continue;
+                    if (visited.at<uchar>(next) == 1) continue;
+                    if (raycasting_map.at<uchar>(next) == 255) continue; // It's a wall
+
+                    // Check if the neighbor is within the max distance from the original source
+                    double dist_m = cv::norm(next - start_node) * res;
+                    if (dist_m > raycasting_max_distance_m_) continue;
+                    
+                    visited.at<uchar>(next) = 1;
+                    q.push(next);
                 }
             }
-        });
+        }
+
+        raw_heatmap.copyTo(occluded_heatmap, visible_mask);
         return occluded_heatmap;
     }
 
-    void publishHeatmaps(const cv::Mat& hist_mean, const cv::Mat& inst_mean, const cv::Mat& hist_std, const cv::Mat& inst_std, const nav_msgs::msg::OccupancyGrid& map_copy)
+    void publishHeatmaps(const cv::Mat &hist_mean, const cv::Mat &inst_mean, const cv::Mat &hist_std, const cv::Mat &inst_std, const nav_msgs::msg::OccupancyGrid &map_copy)
     {
         cv::Mat base_bgr = createBaseMapImage(map_copy);
         std_msgs::msg::Header h;
@@ -383,59 +456,70 @@ private:
         h.frame_id = map_frame_;
 
         auto blended_hist_mean = createBlendedMap(base_bgr, hist_mean, "mrem/hr", background_threshold_mrem_hr_);
-        if(!blended_hist_mean.empty()) {
+        if (!blended_hist_mean.empty())
+        {
             historical_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_mean).toImageMsg());
         }
 
         auto blended_hist_std = createBlendedMap(base_bgr, hist_std, "Std. Dev.", 0.0);
-         if(!blended_hist_std.empty()) {
+        if (!blended_hist_std.empty())
+        {
             historical_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_std).toImageMsg());
         }
 
         auto blended_inst_mean = createBlendedMap(base_bgr, inst_mean, "mrem/hr", background_threshold_mrem_hr_);
-         if(!blended_inst_mean.empty()) {
+        if (!blended_inst_mean.empty())
+        {
             instantaneous_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_inst_mean).toImageMsg());
         }
 
         auto blended_inst_std = createBlendedMap(base_bgr, inst_std, "Std. Dev.", 0.0);
-         if(!blended_inst_std.empty()) {
+        if (!blended_inst_std.empty())
+        {
             instantaneous_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_inst_std).toImageMsg());
         }
 
         // Store historical maps for the save service
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
-            if(!blended_hist_mean.empty()) latest_historical_mean_image_ = blended_hist_mean.clone();
-            if(!blended_hist_std.empty()) latest_historical_std_dev_image_ = blended_hist_std.clone();
+            if (!blended_hist_mean.empty())
+                latest_historical_mean_image_ = blended_hist_mean.clone();
+            if (!blended_hist_std.empty())
+                latest_historical_std_dev_image_ = blended_hist_std.clone();
         }
     }
 
-    cv::Mat createBlendedMap(const cv::Mat& base_img, const cv::Mat& data, const std::string& unit, double threshold)
+    cv::Mat createBlendedMap(const cv::Mat &base_img, const cv::Mat &data, const std::string &unit, double threshold)
     {
-        if (data.empty()) return {};
+        if (data.empty())
+            return {};
 
         double min_val, max_val;
         cv::minMaxLoc(data, &min_val, &max_val);
-        
-        if (max_val < threshold) max_val = threshold + 0.1;
-        if (max_val - min_val < 1e-6) max_val = min_val + 0.1;
+
+        if (max_val < threshold)
+            max_val = threshold + 0.1;
+        if (max_val - min_val < 1e-6)
+            max_val = min_val + 0.1;
 
         cv::Mat color_heatmap = createColorHeatmapImage(data, min_val, max_val, threshold);
-        
+
         cv::Mat blended_image;
         cv::addWeighted(base_img, 0.6, color_heatmap, 0.4, 0.0, blended_image);
         addLegendToImage(blended_image, min_val, max_val, unit);
-        
+
         return blended_image;
     }
 
-    cv::Mat createColorHeatmapImage(const cv::Mat &field, double min_val, double max_val, double threshold) {
+    cv::Mat createColorHeatmapImage(const cv::Mat &field, double min_val, double max_val, double threshold)
+    {
         cv::Mat scaled_field;
         double range = max_val - min_val;
-        if (range <= 1e-6) range = 1.0;
-        
+        if (range <= 1e-6)
+            range = 1.0;
+
         field.convertTo(scaled_field, CV_8UC1, 255.0 / range, -255.0 * min_val / range);
-        
+
         cv::Mat color_field;
         cv::applyColorMap(scaled_field, color_field, cv::COLORMAP_JET);
 
@@ -448,14 +532,20 @@ private:
 
 // --- Helper Function Implementations ---
 
-cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map) {
+cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map)
+{
     cv::Mat base_gray(map.info.height, map.info.width, CV_8UC1);
-    for (unsigned int y = 0; y < map.info.height; ++y) {
-        for (unsigned int x = 0; x < map.info.width; ++x) {
+    for (unsigned int y = 0; y < map.info.height; ++y)
+    {
+        for (unsigned int x = 0; x < map.info.width; ++x)
+        {
             int8_t o = map.data[y * map.info.width + x];
-            if (o == -1) base_gray.at<uchar>(y, x) = 205; // Unknown
-            else if (o >= 50) base_gray.at<uchar>(y, x) = 0; // Obstacle
-            else base_gray.at<uchar>(y, x) = 255; // Free
+            if (o == -1)
+                base_gray.at<uchar>(y, x) = 205; // Unknown
+            else if (o >= 50)
+                base_gray.at<uchar>(y, x) = 0; // Obstacle
+            else
+                base_gray.at<uchar>(y, x) = 255; // Free
         }
     }
     cv::Mat bgr;
@@ -463,7 +553,8 @@ cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map) {
     return bgr;
 }
 
-void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std::string &unit_label) {
+void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std::string &unit_label)
+{
     int border_width = 150;
     cv::copyMakeBorder(image, image, 0, 0, 0, border_width, cv::BORDER_CONSTANT, cv::Scalar(255, 255, 255));
 
@@ -473,14 +564,16 @@ void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std:
     int legend_y = image.rows / 4;
 
     cv::Mat legend_bar(legend_height, legend_width, CV_8UC3);
-    for (int r = 0; r < legend_height; ++r) {
+    for (int r = 0; r < legend_height; ++r)
+    {
         double ratio = (double)(legend_height - 1 - r) / (legend_height - 1);
         double val_at_ratio = min_val + ratio * (max_val - min_val);
-        
+
         cv::Mat temp_field(1, 1, CV_32FC1, (float)val_at_ratio);
         cv::Mat scaled_pixel;
         double range = max_val - min_val;
-        if (range <= 1e-6) range = 1.0;
+        if (range <= 1e-6)
+            range = 1.0;
         temp_field.convertTo(scaled_pixel, CV_8UC1, 255.0 / range, -255.0 * min_val / range);
 
         cv::Mat mapped_color;
@@ -507,4 +600,3 @@ int main(int argc, char **argv)
     rclcpp::shutdown();
     return 0;
 }
-
