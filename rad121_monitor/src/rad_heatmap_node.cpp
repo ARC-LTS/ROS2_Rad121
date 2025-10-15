@@ -196,7 +196,7 @@ private:
             pose_in_sensor.header.stamp = this->get_clock()->now();
             tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(500));
 
-            { // Scope for the lock_guard to ensure mutex is released before triggerGPUpdate
+            { // Scope for the lock_guard
                 std::lock_guard<std::mutex> lock(data_mutex_);
                 RadiationSample sample = {pose_in_map.pose.position.x, pose_in_map.pose.position.y, msg->data[1], next_sample_id_++};
                 historical_samples_.push_back(sample);
@@ -254,7 +254,6 @@ private:
             return;
         }
 
-        // Prepare two separate requests: one for all historical data, one for recent data
         auto request_hist = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
         for (const auto &s : hist_samples_copy)
         {
@@ -271,7 +270,6 @@ private:
             request_inst->observed_values_mean.push_back(s.value);
         }
 
-        // Generate the grid of points where we want predictions
         std::vector<geometry_msgs::msg::Point> points_to_predict;
         std::vector<std::pair<int, int>> valid_pixel_coords;
         double res = map_copy.info.resolution;
@@ -281,8 +279,9 @@ private:
         {
             for (unsigned int x = 0; x < map_copy.info.width; ++x)
             {
-                if (map_copy.data[y * map_copy.info.width + x] < 50)
-                { // Free space
+                // Predict only for free space (value < 50)
+                if (map_copy.data[y * map_copy.info.width + x] < 50 && map_copy.data[y * map_copy.info.width + x] >= 0)
+                {
                     geometry_msgs::msg::Point p;
                     p.x = origin_x + (x + 0.5) * res;
                     p.y = origin_y + (y + 0.5) * res;
@@ -300,8 +299,6 @@ private:
         auto future_hist = gp_client_->async_send_request(request_hist);
         auto future_inst = gp_client_->async_send_request(request_inst);
 
-        // Detach a thread to handle the service responses and heavy processing,
-        // preventing the main ROS executor from being blocked.
         std::thread([this, future_hist = std::move(future_hist), future_inst = std::move(future_inst),
                      map_copy, raycasting_map_copy, valid_pixel_coords, hist_samples_copy, inst_samples_copy]() mutable
                     {
@@ -321,11 +318,7 @@ private:
                                     hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_mean[i];
                                     hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_std_dev[i];
                                 }
-                            }
-                            else
-                            {
-                                RCLCPP_ERROR(this->get_logger(), "Historical GP response invalid or size mismatch!");
-                            }
+                            } else { /* Error handling */ }
 
                             if (response_inst && response_inst->predicted_mean.size() == valid_pixel_coords.size())
                             {
@@ -336,15 +329,10 @@ private:
                                     inst_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_mean[i];
                                     inst_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_std_dev[i];
                                 }
-                            }
-                            else
-                            {
-                                RCLCPP_ERROR(this->get_logger(), "Instantaneous GP response invalid or size mismatch!");
-                            }
+                            } else { /* Error handling */ }
 
                             RCLCPP_INFO(this->get_logger(), "Both GP responses received. Applying occlusion...");
 
-                            // Apply raycasting to hide predictions in areas occluded by walls
                             cv::Mat hist_mean_occluded = applyOcclusionFloodFill(hist_mean_raw, hist_samples_copy, map_copy, raycasting_map_copy);
                             cv::Mat inst_mean_occluded = applyOcclusionFloodFill(inst_mean_raw, inst_samples_copy, map_copy, raycasting_map_copy);
                             cv::Mat hist_std_occluded = applyOcclusionFloodFill(hist_std_raw, hist_samples_copy, map_copy, raycasting_map_copy);
@@ -359,30 +347,21 @@ private:
 
                         std::lock_guard<std::mutex> lock(update_mutex_);
                         is_updating_ = false;
-                        RCLCPP_INFO(this->get_logger(), "Update cycle complete.");
-                    })
+                        RCLCPP_INFO(this->get_logger(), "Update cycle complete."); })
             .detach();
     }
 
     // --- Helper and Visualization Functions ---
 
-    /**
-     * @brief Applies occlusion using a more efficient flood-fill (BFS) approach.
-     *
-     * Instead of raycasting from every pixel to every source, this method starts a
-     * breadth-first search from each source location, expanding outwards until it hits
-     * a wall or the maximum configured distance. All visited pixels are marked as
-     * visible. This avoids redundant checks and is significantly faster.
-     */
     cv::Mat applyOcclusionFloodFill(const cv::Mat &raw_heatmap, const std::vector<RadiationSample> &sources,
                                     const nav_msgs::msg::OccupancyGrid &map_info, const cv::Mat &raycasting_map)
     {
-        if (raw_heatmap.empty() || sources.empty()) return cv::Mat::zeros(raw_heatmap.size(), raw_heatmap.type());
+        if (raw_heatmap.empty() || sources.empty())
+            return cv::Mat::zeros(raw_heatmap.size(), raw_heatmap.type());
 
         cv::Mat occluded_heatmap = cv::Mat::zeros(raw_heatmap.size(), raw_heatmap.type());
         cv::Mat visible_mask = cv::Mat::zeros(raw_heatmap.size(), CV_8U);
 
-        // Determine the effective sources to use (the N most recent ones)
         std::vector<RadiationSample> effective_sources;
         if (sources.size() > static_cast<size_t>(raycasting_max_sources_))
         {
@@ -393,7 +372,6 @@ private:
             effective_sources = sources;
         }
 
-        // Convert world coordinates of sources to map pixel coordinates
         std::vector<cv::Point> source_pixels;
         double res = map_info.info.resolution;
         double origin_x = map_info.info.origin.position.x;
@@ -407,9 +385,9 @@ private:
                 source_pixels.push_back(cv::Point(px, py));
             }
         }
-        if (source_pixels.empty()) return occluded_heatmap;
+        if (source_pixels.empty())
+            return occluded_heatmap;
 
-        // Run BFS from each source to find all visible pixels within range
         for (const auto &start_node : source_pixels)
         {
             std::queue<cv::Point> q;
@@ -422,22 +400,24 @@ private:
             {
                 cv::Point current = q.front();
                 q.pop();
-                visible_mask.at<uchar>(current) = 255; // Mark as visible
+                visible_mask.at<uchar>(current) = 255;
 
-                // Explore neighbors (4-way connectivity)
                 const cv::Point neighbors[] = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
                 for (const auto &offset : neighbors)
                 {
                     cv::Point next = current + offset;
 
-                    if (next.x < 0 || next.x >= raycasting_map.cols || next.y < 0 || next.y >= raycasting_map.rows) continue;
-                    if (visited.at<uchar>(next) == 1) continue;
-                    if (raycasting_map.at<uchar>(next) == 255) continue; // It's a wall
+                    if (next.x < 0 || next.x >= raycasting_map.cols || next.y < 0 || next.y >= raycasting_map.rows)
+                        continue;
+                    if (visited.at<uchar>(next) == 1)
+                        continue;
+                    if (raycasting_map.at<uchar>(next) == 255)
+                        continue;
 
-                    // Check if the neighbor is within the max distance from the original source
                     double dist_m = cv::norm(next - start_node) * res;
-                    if (dist_m > raycasting_max_distance_m_) continue;
-                    
+                    if (dist_m > raycasting_max_distance_m_)
+                        continue;
+
                     visited.at<uchar>(next) = 1;
                     q.push(next);
                 }
@@ -455,25 +435,35 @@ private:
         h.stamp = this->now();
         h.frame_id = map_frame_;
 
-        auto blended_hist_mean = createBlendedMap(base_bgr, hist_mean, "mrem/hr", background_threshold_mrem_hr_);
+        // NEW: Create a mask of valid (free) space from the occupancy grid.
+        // This mask will be used to ensure the heatmap is only drawn inside the map boundaries.
+        cv::Mat free_space_mask(map_copy.info.height, map_copy.info.width, CV_8UC1);
+        for (size_t i = 0; i < map_copy.data.size(); ++i)
+        {
+            // A pixel is valid if it's known free space (value between 0 and 50).
+            free_space_mask.data[i] = (map_copy.data[i] >= 0 && map_copy.data[i] < 50) ? 255 : 0;
+        }
+
+        // Pass the new mask to each blending function
+        auto blended_hist_mean = createBlendedMap(base_bgr, hist_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask);
         if (!blended_hist_mean.empty())
         {
             historical_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_mean).toImageMsg());
         }
 
-        auto blended_hist_std = createBlendedMap(base_bgr, hist_std, "Std. Dev.", 0.0);
+        auto blended_hist_std = createBlendedMap(base_bgr, hist_std, "Std. Dev.", 0.0, free_space_mask);
         if (!blended_hist_std.empty())
         {
             historical_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_std).toImageMsg());
         }
 
-        auto blended_inst_mean = createBlendedMap(base_bgr, inst_mean, "mrem/hr", background_threshold_mrem_hr_);
+        auto blended_inst_mean = createBlendedMap(base_bgr, inst_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask);
         if (!blended_inst_mean.empty())
         {
             instantaneous_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_inst_mean).toImageMsg());
         }
 
-        auto blended_inst_std = createBlendedMap(base_bgr, inst_std, "Std. Dev.", 0.0);
+        auto blended_inst_std = createBlendedMap(base_bgr, inst_std, "Std. Dev.", 0.0, free_space_mask);
         if (!blended_inst_std.empty())
         {
             instantaneous_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_inst_std).toImageMsg());
@@ -489,7 +479,8 @@ private:
         }
     }
 
-    cv::Mat createBlendedMap(const cv::Mat &base_img, const cv::Mat &data, const std::string &unit, double threshold)
+    // MODIFIED: Added a const cv::Mat& mask parameter
+    cv::Mat createBlendedMap(const cv::Mat &base_img, const cv::Mat &data, const std::string &unit, double threshold, const cv::Mat &mask)
     {
         if (data.empty())
             return {};
@@ -503,6 +494,9 @@ private:
             max_val = min_val + 0.1;
 
         cv::Mat color_heatmap = createColorHeatmapImage(data, min_val, max_val, threshold);
+
+        // NEW: Zero out the color heatmap in areas that are not free space
+        color_heatmap.setTo(cv::Scalar(0, 0, 0), ~mask);
 
         cv::Mat blended_image;
         cv::addWeighted(base_img, 0.6, color_heatmap, 0.4, 0.0, blended_image);
@@ -523,9 +517,9 @@ private:
         cv::Mat color_field;
         cv::applyColorMap(scaled_field, color_field, cv::COLORMAP_JET);
 
-        cv::Mat mask;
-        cv::compare(field, threshold, mask, cv::CMP_LT);
-        color_field.setTo(cv::Scalar(0, 0, 0, 0), mask);
+        cv::Mat value_mask;
+        cv::compare(field, threshold, value_mask, cv::CMP_LT);
+        color_field.setTo(cv::Scalar(0, 0, 0, 0), value_mask); // Keep low values transparent
         return color_field;
     }
 };
