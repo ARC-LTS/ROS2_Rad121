@@ -1,0 +1,8 @@
+rad_zone_planner_node:
+  ros__parameters:
+    use_sim_time: True
+    heatmap_topic: "/rad_heatmap/raw_mean_map"
+    map_topic: "/map"
+    radiation_threshold: 2.0 
+    min_zone_area: 50.0
+    map_frame: "map"

@@ -66,6 +66,7 @@ public:
         instantaneous_heatmap_pub_ = it.advertise("/rad_heatmap/instantaneous_mean", 1);
         historical_std_dev_pub_ = it.advertise("/rad_heatmap/historical_std_dev", 1);
         instantaneous_std_dev_pub_ = it.advertise("/rad_heatmap/instantaneous_std_dev", 1);
+        raw_mean_map_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
 
         gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
 
@@ -116,6 +117,7 @@ private:
     rclcpp::Service<rad121_monitor::srv::SaveMaps>::SharedPtr save_maps_service_;
     image_transport::Publisher historical_heatmap_pub_, instantaneous_heatmap_pub_;
     image_transport::Publisher historical_std_dev_pub_, instantaneous_std_dev_pub_;
+    image_transport::Publisher raw_mean_map_pub_;
     rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
 
     // TF2 for coordinate transformations
@@ -434,6 +436,10 @@ private:
         std_msgs::msg::Header h;
         h.stamp = this->now();
         h.frame_id = map_frame_;
+
+        if (!hist_mean.empty()) {
+            raw_mean_map_pub_.publish(*cv_bridge::CvImage(h, "32FC1", hist_mean).toImageMsg());
+        }
 
         // NEW: Create a mask of valid (free) space from the occupancy grid.
         // This mask will be used to ensure the heatmap is only drawn inside the map boundaries.

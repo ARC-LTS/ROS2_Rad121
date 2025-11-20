@@ -38,7 +38,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GPPredict.srv"
   "srv/GetHeatmaps.srv"
   "srv/SaveMaps.srv"
-  DEPENDENCIES geometry_msgs
+  "msg/RadZone.msg"
+  "msg/RadZoneArray.msg"
+  DEPENDENCIES geometry_msgs std_msgs
 )
 
 add_executable(rad121_monitor_node src/rad121_monitor_node.cpp src/CUSB_RAD121.cpp)
@@ -126,6 +128,19 @@ ament_target_dependencies(rad_mapper_node
   visualization_msgs
 )
 
+add_executable(rad_zone_planner_node src/rad_zone_planner_node.cpp)
+ament_target_dependencies(rad_zone_planner_node
+  rclcpp
+  cv_bridge
+  sensor_msgs
+  nav_msgs
+  visualization_msgs
+)
+target_link_libraries(rad_zone_planner_node
+  ${OpenCV_LIBRARIES}
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
+)
+
 install(TARGETS
   rad121_monitor_node
   rad_heatmap_node
@@ -133,6 +148,7 @@ install(TARGETS
   rad_mapper_node
   rad_pointcloud_node
   zone_selector_node
+  rad_zone_planner_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS

@@ -58,6 +58,7 @@ public:
         image_transport::ImageTransport it(this->shared_from_this());
         heatmap_pub_ = it.advertise("/rad_heatmap/mean_map", 1);
         std_dev_heatmap_pub_ = it.advertise("/rad_heatmap/std_dev_map", 1);
+        raw_heatmap_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
 
         gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
 
@@ -275,6 +276,14 @@ private:
             cv::Mat base_bgr = createBaseMapImage(map_copy);
 
             cv::Mat final_occluded_heatmap = combineOcclusionMasks(current_raw_heatmap_, samples_copy, sample_occlusion_masks_, map_image_raycasting_copy);
+            
+            std_msgs::msg::Header h;
+            h.stamp = this->now();
+            h.frame_id = map_frame_;
+
+            // Publish the raw float heatmap
+            raw_heatmap_pub_.publish(*cv_bridge::CvImage(h, "32FC1", final_occluded_heatmap).toImageMsg());
+
             cv::Mat color_heatmap = createColorHeatmapImage(final_occluded_heatmap, background_threshold_mrem_hr_);
             cv::Mat blended_image;
             cv::addWeighted(base_bgr, 0.6, color_heatmap, 0.4, 0.0, blended_image);
@@ -285,9 +294,7 @@ private:
             if (min_val >= max_val) min_val = max_val - 0.1;
             addLegendToImage(blended_image, min_val, max_val, "mrem/hr");
 
-            std_msgs::msg::Header h;
             h.stamp = this->now();
-            h.frame_id = map_frame_;
             heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_image).toImageMsg());
             
             cv::Mat std_dev_color_heatmap = createColorHeatmapImage(current_std_dev_heatmap_, 0.0);
@@ -397,6 +404,7 @@ private:
     rclcpp::Service<rad121_monitor::srv::SaveMaps>::SharedPtr save_maps_service_;
     image_transport::Publisher heatmap_pub_;
     image_transport::Publisher std_dev_heatmap_pub_;
+    image_transport::Publisher raw_heatmap_pub_;
     rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
