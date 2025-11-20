@@ -12,6 +12,8 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "rad121_monitor/srv/gp_predict.hpp"
 #include "rad121_monitor/srv/save_maps.hpp"
+#include "rad121_monitor/msg/rad_zone.hpp"
+#include "rad121_monitor/msg/rad_zone_array.hpp"
 
 #include <vector>
 #include <mutex>
@@ -48,6 +50,8 @@ public:
         this->declare_parameter<std::string>("output_directory", "/tmp");
         this->declare_parameter<int>("raycasting_max_sources", 5);
         this->declare_parameter<double>("raycasting_max_distance_m", 10.0);
+        this->declare_parameter<double>("radiation_threshold", 2.0);
+        this->declare_parameter<double>("min_zone_area", 50.0);
 
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
@@ -56,6 +60,8 @@ public:
         output_directory_ = this->get_parameter("output_directory").as_string();
         raycasting_max_sources_ = this->get_parameter("raycasting_max_sources").as_int();
         raycasting_max_distance_m_ = this->get_parameter("raycasting_max_distance_m").as_double();
+        radiation_threshold_ = this->get_parameter("radiation_threshold").as_double();
+        min_zone_area_ = this->get_parameter("min_zone_area").as_double();
 
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(), std::bind(&DynamicRadiationHeatmapNode::mapCallback, this, std::placeholders::_1));
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/rad", 10, std::bind(&DynamicRadiationHeatmapNode::radCallback, this, std::placeholders::_1));
@@ -67,6 +73,7 @@ public:
         historical_std_dev_pub_ = it.advertise("/rad_heatmap/historical_std_dev", 1);
         instantaneous_std_dev_pub_ = it.advertise("/rad_heatmap/instantaneous_std_dev", 1);
         raw_mean_map_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
+        zone_waypoints_pub_ = this->create_publisher<rad121_monitor::msg::RadZoneArray>("/radiation_zones", 10);
 
         gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
 
@@ -118,6 +125,7 @@ private:
     image_transport::Publisher historical_heatmap_pub_, instantaneous_heatmap_pub_;
     image_transport::Publisher historical_std_dev_pub_, instantaneous_std_dev_pub_;
     image_transport::Publisher raw_mean_map_pub_;
+    rclcpp::Publisher<rad121_monitor::msg::RadZoneArray>::SharedPtr zone_waypoints_pub_;
     rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
 
     // TF2 for coordinate transformations
@@ -126,7 +134,7 @@ private:
 
     // Parameters
     std::string sensor_frame_, map_frame_, output_directory_;
-    double background_threshold_mrem_hr_;
+    double background_threshold_mrem_hr_, radiation_threshold_, min_zone_area_;
     size_t recent_samples_window_size_;
     int raycasting_max_sources_;
     double raycasting_max_distance_m_;
@@ -311,27 +319,68 @@ private:
 
                             cv::Mat hist_mean_raw, hist_std_raw, inst_mean_raw, inst_std_raw;
 
-                            if (response_hist && response_hist->predicted_mean.size() == valid_pixel_coords.size())
+                            if (!response_hist || response_hist->predicted_mean.size() != valid_pixel_coords.size() ||
+                                !response_inst || response_inst->predicted_mean.size() != valid_pixel_coords.size())
                             {
-                                hist_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                                hist_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                                for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
-                                {
-                                    hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_mean[i];
-                                    hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_std_dev[i];
-                                }
-                            } else { /* Error handling */ }
+                                RCLCPP_WARN(this->get_logger(), "GP service returned invalid data or timed out.");
+                                std::lock_guard<std::mutex> lock(update_mutex_);
+                                is_updating_ = false;
+                                return;
+                            }
+                            
+                            // Get raw maps from GP responses
+                            hist_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                            hist_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                            for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
+                            {
+                                hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_mean[i];
+                                hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_std_dev[i];
+                            }
+                            inst_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                            inst_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                            for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
+                            {
+                                inst_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_mean[i];
+                                inst_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_std_dev[i];
+                            }
 
-                            if (response_inst && response_inst->predicted_mean.size() == valid_pixel_coords.size())
-                            {
-                                inst_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                                inst_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                                for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
-                                {
-                                    inst_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_mean[i];
-                                    inst_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_std_dev[i];
+                            // Zone Detection
+                            std::vector<std::vector<cv::Point>> final_contours;
+                            if (!hist_mean_raw.empty()) {
+                                cv::Mat flipped_heatmap;
+                                cv::flip(hist_mean_raw, flipped_heatmap, 0);
+
+                                cv::Mat binary_map;
+                                cv::threshold(flipped_heatmap, binary_map, radiation_threshold_, 255, cv::THRESH_BINARY);
+                                binary_map.convertTo(binary_map, CV_8U);
+
+                                std::vector<std::vector<cv::Point>> contours;
+                                cv::findContours(binary_map, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+                                for (const auto& cont : contours) {
+                                    if (cv::contourArea(cont) > min_zone_area_) {
+                                        final_contours.push_back(cont);
+                                    }
                                 }
-                            } else { /* Error handling */ }
+                            }
+
+                            auto zone_array_msg = std::make_unique<rad121_monitor::msg::RadZoneArray>();
+                            zone_array_msg->header.stamp = this->get_clock()->now();
+                            zone_array_msg->header.frame_id = map_frame_;
+                            char zone_label_char = 'A';
+                            for (const auto& contour : final_contours) {
+                                rad121_monitor::msg::RadZone zone_msg;
+                                zone_msg.label = std::string(1, zone_label_char++);
+                                cv::Moments moments = cv::moments(contour);
+                                if (moments.m00 > 0) {
+                                    cv::Point2f pc(moments.m10 / moments.m00, moments.m01 / moments.m00);
+                                    zone_msg.center.x = map_copy.info.origin.position.x + pc.x * map_copy.info.resolution;
+                                    zone_msg.center.y = map_copy.info.origin.position.y + (map_copy.info.height - pc.y) * map_copy.info.resolution;
+                                    zone_msg.center.z = 0.1;
+                                }
+                                zone_array_msg->zones.push_back(zone_msg);
+                            }
+                            zone_waypoints_pub_->publish(std::move(zone_array_msg));
 
                             RCLCPP_INFO(this->get_logger(), "Both GP responses received. Applying occlusion...");
 
@@ -340,7 +389,11 @@ private:
                             cv::Mat hist_std_occluded = applyOcclusionFloodFill(hist_std_raw, hist_samples_copy, map_copy, raycasting_map_copy);
                             cv::Mat inst_std_occluded = applyOcclusionFloodFill(inst_std_raw, inst_samples_copy, map_copy, raycasting_map_copy);
 
-                            publishHeatmaps(hist_mean_occluded, inst_mean_occluded, hist_std_occluded, inst_std_occluded, map_copy);
+                            publishHeatmaps(hist_mean_occluded, inst_mean_occluded, hist_std_occluded, inst_std_occluded, map_copy, final_contours);
+                        }
+                        catch (const cv::Exception &e)
+                        {
+                            RCLCPP_ERROR(this->get_logger(), "OpenCV Exception in GP update thread: %s", e.what());
                         }
                         catch (const std::exception &e)
                         {
@@ -430,7 +483,7 @@ private:
         return occluded_heatmap;
     }
 
-    void publishHeatmaps(const cv::Mat &hist_mean, const cv::Mat &inst_mean, const cv::Mat &hist_std, const cv::Mat &inst_std, const nav_msgs::msg::OccupancyGrid &map_copy)
+    void publishHeatmaps(const cv::Mat &hist_mean, const cv::Mat &inst_mean, const cv::Mat &hist_std, const cv::Mat &inst_std, const nav_msgs::msg::OccupancyGrid &map_copy, const std::vector<std::vector<cv::Point>>& final_contours)
     {
         cv::Mat base_bgr = createBaseMapImage(map_copy);
         std_msgs::msg::Header h;
@@ -441,19 +494,29 @@ private:
             raw_mean_map_pub_.publish(*cv_bridge::CvImage(h, "32FC1", hist_mean).toImageMsg());
         }
 
-        // NEW: Create a mask of valid (free) space from the occupancy grid.
-        // This mask will be used to ensure the heatmap is only drawn inside the map boundaries.
         cv::Mat free_space_mask(map_copy.info.height, map_copy.info.width, CV_8UC1);
         for (size_t i = 0; i < map_copy.data.size(); ++i)
         {
-            // A pixel is valid if it's known free space (value between 0 and 50).
             free_space_mask.data[i] = (map_copy.data[i] >= 0 && map_copy.data[i] < 50) ? 255 : 0;
         }
 
-        // Pass the new mask to each blending function
         auto blended_hist_mean = createBlendedMap(base_bgr, hist_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask);
         if (!blended_hist_mean.empty())
         {
+            cv::Mat top_left_blended;
+            cv::flip(blended_hist_mean, top_left_blended, 0);
+
+            cv::drawContours(top_left_blended, final_contours, -1, cv::Scalar(0, 0, 180), 2);
+            for (size_t i = 0; i < final_contours.size(); ++i) {
+                cv::Moments moments = cv::moments(final_contours[i]);
+                if (moments.m00 > 0) {
+                    cv::Point2f pc(moments.m10 / moments.m00, moments.m01 / moments.m00);
+                    cv::putText(top_left_blended, std::string(1, 'A' + i), pc, cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+                }
+            }
+        
+            cv::flip(top_left_blended, blended_hist_mean, 0);
+
             historical_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_mean).toImageMsg());
         }
 
@@ -485,7 +548,6 @@ private:
         }
     }
 
-    // MODIFIED: Added a const cv::Mat& mask parameter
     cv::Mat createBlendedMap(const cv::Mat &base_img, const cv::Mat &data, const std::string &unit, double threshold, const cv::Mat &mask)
     {
         if (data.empty())
@@ -500,8 +562,6 @@ private:
             max_val = min_val + 0.1;
 
         cv::Mat color_heatmap = createColorHeatmapImage(data, min_val, max_val, threshold);
-
-        // NEW: Zero out the color heatmap in areas that are not free space
         color_heatmap.setTo(cv::Scalar(0, 0, 0), ~mask);
 
         cv::Mat blended_image;
