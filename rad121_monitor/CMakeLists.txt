@@ -36,6 +36,7 @@ include_directories(include ${LIBFTDI_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GPPredict.srv"
+  "srv/FindPeaks.srv"
   "srv/GetHeatmaps.srv"
   "srv/SaveMaps.srv"
   "msg/RadZone.msg"
@@ -141,6 +142,17 @@ target_link_libraries(rad_zone_planner_node
   ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
+add_executable(peak_finder_client_node src/peak_finder_client_node.cpp)
+ament_target_dependencies(peak_finder_client_node
+  rclcpp
+  tf2_ros
+  tf2_geometry_msgs
+  visualization_msgs
+)
+target_link_libraries(peak_finder_client_node
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
+)
+
 install(TARGETS
   rad121_monitor_node
   rad_heatmap_node
@@ -149,6 +161,7 @@ install(TARGETS
   rad_pointcloud_node
   zone_selector_node
   rad_zone_planner_node
+  peak_finder_client_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS

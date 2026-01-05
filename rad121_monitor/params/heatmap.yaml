@@ -15,6 +15,9 @@ rad_heatmap_node:
     gaussian_sigma: 15.0
     gaussian_blur_size: 3  # must be odd
 
+    zone_separation_aggressiveness: 0.75
+
+
 rad_mapper_node:
   ros__parameters:
     target_frame: "base_link"
@@ -25,3 +28,13 @@ gp_predictor_node:
     kernel:
       type: "Matern52"
       lengthscale: 5.0 # You can tune this value
+
+peak_finder_client_node:
+  ros__parameters:
+    sensor_frame: "base_link"
+    map_frame: "map"
+    num_starts: 30
+    marker_scale: 0.5
+    marker_color_r: [1.0, 0.0, 0.0, 1.0]
+    matching_threshold_m: 1.5
+    min_peak_mrem_hr: 0.4

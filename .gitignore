@@ -3,3 +3,4 @@ rad121_monitor/launch/static_rad_heatmap_launch.py
 rad121_monitor/launch/offline_rad_mapper_launch.py
 rad121_monitor/scripts/gp_predictor_node.py.bak
 vscode/
+zoning_logic_context.md

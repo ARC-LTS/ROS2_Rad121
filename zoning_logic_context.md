@@ -7,42 +7,34 @@ Create an autonomous robotic system for radiological surveillance and swabbing i
 ## Project Phases
 
 (a) **Preliminary Survey:** Conduct a survey of the environment using frontier-based exploration to map radiation levels. (Completed)
-(b) **Zone Definition:** Autonomously identify and define "zones" of interest based on the survey data. (Current Task)
+(b) **Zone Definition:** Autonomously identify and define "zones" of interest based on the survey data. (Completed)
 (c) **In-Zone Scanning:** Navigate to each zone and use a secondary sensor to find the optimal swabbing spot.
 (d) **Swabbing:** Perform the swabbing action.
 (e) **Repeat:** Continue until all zones are processed.
 (f) **Docking:** Autonomously dock after the mission.
 
-## Current Task: Implement Zoning Logic (Phase b)
+## Phase (b) Implementation: Integrated Zone Detection
 
-The goal is to create a ROS2 node that processes the radiation data from the preliminary survey to autonomously define zones for swabbing.
+The zoning logic has been implemented and integrated directly into the `rad_heatmap_node`. This approach was chosen to ensure data consistency, simplify the overall system architecture, and provide the desired annotated image visualization. The initially proposed `rad_zone_planner_node` was removed in favor of this more robust, consolidated design.
 
-### Existing Relevant Components
+### Final Architecture Details
 
-*   **`rad121_monitor` package:** The main ROS2 package for this project.
-*   **`rad_mapper_node`:** Subscribes to `/rad` and `/map` to record the robot's path and where radiation was detected. This provides the raw survey data.
-*   **`rad_heatmap_node` :** These nodes generate a radiation heatmap from the survey data using Gaussian Process (GP) regression. They publish the heatmap as a `sensor_msgs/Image` on `/rad_heatmap/mean_map`. This heatmap is a good input for the zoning logic.
-*   **`zone_selector_node`:** Allows for manual definition of zones via RViz, which are saved to `predefined_zones.yaml`. The output format (center, radius) is a good target for the autonomous zone planner.
+*   **Consolidated Node:** All logic for heatmap generation, zone detection, and visualization now resides within `rad_heatmap_node.cpp`.
 
-### Proposed Plan for Zoning Logic
+*   **Input:** The logic uses the raw historical mean heatmap (`hist_mean_raw`) that is generated internally by the node after the Gaussian Process (GP) regression step.
 
-1.  **Create a new ROS2 node:** `rad_zone_planner_node`.
-2.  **Input:** The node will subscribe to the `/rad_heatmap/mean_map` topic (a `sensor_msgs/Image`) published by the `rad_heatmap_node`. It will also need map metadata, so subscribing to `/map` (`nav_msgs/OccupancyGrid`) is also necessary to convert pixel coordinates to world coordinates.
-3.  **Processing (inside the node):**
-    a.  Convert the received heatmap image to an OpenCV `cv::Mat`.
-    b.  Apply a threshold to the heatmap to isolate areas with high radiation intensity. The threshold value should be a configurable parameter.
-    c.  Use OpenCV's `findContours` on the thresholded image to find distinct high-radiation regions.
-    d.  Filter out very small, insignificant contours.
-    e.  For each valid contour, calculate its properties:
-        *   Centroid (to define the zone's center).
-        *   Bounding circle (to define the zone's radius).
-    f.  Store these as `Zone` objects (e.g., a struct with center, radius, and an ID).
-4.  **Output:**
-    a.  Publish a `visualization_msgs/MarkerArray` to display the zones in RViz for visualization. Each zone will be a cylinder or a circle.
-    b.  Provide the zones to other nodes. A service that returns the list of zones would be a good approach, similar to the existing services in the package. A custom service definition `GetZones.srv` might be needed. Or, it could publish to a topic.
-5.  **Integration:**
-    a.  Create a new source file `src/rad_zone_planner_node.cpp`.
-    b.  Update `CMakeLists.txt` to build the new executable.
-    c.  Create a new launch file `launch/rad_zone_planner_launch.py` to run the node.
+*   **Processing (within `rad_heatmap_node`):**
+    1.  A configurable `radiation_threshold` is applied to the raw heatmap to create a binary image of high-radiation areas.
+    2.  To separate large, contiguous zones into smaller, more meaningful regions, a **Watershed Segmentation** algorithm is applied. The sensitivity of this separation can be adjusted via the `zone_separation_aggressiveness` ROS parameter.
+    3.  `cv::findContours` is used on the resulting watershed segments to extract the precise boundaries of each new zone.
+    4.  For each valid contour, its centroid is calculated to serve as a navigation waypoint.
 
-This approach leverages the existing heatmap generation and provides a clear path to autonomously defining the zones as requested.
+*   **Output:**
+    1.  **Annotated Heatmap Image:** The primary visualization is the `/rad_heatmap/historical_mean` topic. The node draws the found zone contours and their labels (A, B, C...) directly onto the blended color heatmap before publishing. This provides a single, intuitive visual output.
+    2.  **Zone Waypoints:** The node publishes a `rad121_monitor/msg/RadZoneArray` message on the `/radiation_zones` topic. This message contains the label and the calculated center point (waypoint) for each detected zone, which can be consumed by a downstream navigation or task planning system.
+
+*   **Integration:**
+    *   All new logic is contained within `rad121_monitor/src/rad_heatmap_node.cpp`.
+    *   Custom message types `RadZone.msg` and `RadZoneArray.msg` were created to support the waypoint publisher.
+    *   The `CMakeLists.txt` has been updated to build these messages and the modified node.
+    *   The system is launched via `rad_heatmap_launch.py`, which runs the `rad_heatmap_node` and the required `gp_predictor_node`.
