@@ -6,13 +6,10 @@ import os
 def generate_launch_description():
     pkg_share = get_package_share_directory('rad121_monitor')
 
-    # Parameter file for the heatmap node
     heatmap_param_file = os.path.join(pkg_share, 'params', 'heatmap.yaml')
 
-    # Parameter file for the new zone planner node
     planner_param_file = os.path.join(pkg_share, 'params', 'zone_planner.yaml')
 
-    # The GP prediction server
     gp_prediction_server_node = Node(
         package='rad121_monitor',
         executable='gp_predictor_node.py',
@@ -20,7 +17,6 @@ def generate_launch_description():
         output='screen'
     )
 
-    # The C++ node that generates the heatmaps
     rad_heatmap_node = Node(
         package='rad121_monitor',
         executable='rad_heatmap_node',
@@ -29,7 +25,6 @@ def generate_launch_description():
         output='screen'
     )
 
-    # The new C++ node that finds and visualizes zones
     rad_zone_planner_node = Node(
         package='rad121_monitor',
         executable='rad_zone_planner_node',

@@ -1,6 +1,4 @@
-# Request is empty
 ---
-# Response contains the two flattened heatmaps and their dimensions
 uint32 height
 uint32 width
 float64[] mean_heatmap
