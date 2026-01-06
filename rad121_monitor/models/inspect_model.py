@@ -15,12 +15,14 @@ try:
             print(f"Key: '{key}'")
             print(f"  - Type: {type(value)}")
 
+            # Try to convert to numpy array to check shape
             try:
                 value_np = np.array(value)
                 print(f"  - Shape as array: {value_np.shape}")
             except:
                 print("  - Could not determine shape.")
 
+            # Print the value itself
             print(f"  - Value: {value}")
             print("-" * 20)
     else:

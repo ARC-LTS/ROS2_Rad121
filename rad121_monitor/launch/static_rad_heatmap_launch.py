@@ -8,6 +8,7 @@ def generate_launch_description():
 
     param_file = os.path.join(pkg_share, 'params', 'heatmap.yaml')
     
+    # IMPORTANT: Update this to the correct path for your .pkl file!
     model_file_path = os.path.join(pkg_share, 'models', 'gp_model.pkl')
 
     static_predictor_node = Node(
