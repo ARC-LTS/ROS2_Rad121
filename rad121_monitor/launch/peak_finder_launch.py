@@ -6,8 +6,10 @@ import os
 def generate_launch_description():
     pkg_share = get_package_share_directory('rad121_monitor')
 
+    # Path to your parameter file
     param_file = os.path.join(pkg_share, 'params', 'heatmap.yaml')
 
+    # The Python node that provides the GP services (prediction and peak finding)
     gp_service_node = Node(
         package='rad121_monitor',
         executable='gp_predictor_node.py',
@@ -16,6 +18,7 @@ def generate_launch_description():
         parameters=[param_file]
     )
 
+    # The C++ node that calls the peak finding service
     peak_finder_client_node = Node(
         package='rad121_monitor',
         executable='peak_finder_client_node',

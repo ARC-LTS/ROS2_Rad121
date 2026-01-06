@@ -3,7 +3,7 @@ rad_heatmap_node:
     use_sim_time: True
     sensor_frame: "base_link"
     map_frame: "map"
-    output_directory: "/home/brendoncintas/radmon_ws/data/"  Changed from output_file
+    output_directory: "/home/brendoncintas/radmon_ws/data/" # Changed from output_file
 
     min_valid_mrem: 0.4
     min_sample_mrem: 0.0
@@ -13,7 +13,7 @@ rad_heatmap_node:
     raycasting_max_distance_m: 20.0
 
     gaussian_sigma: 15.0
-    gaussian_blur_size: 3   must be odd
+    gaussian_blur_size: 3  # must be odd
 
     zone_separation_aggressiveness: 0.75
 
@@ -27,7 +27,7 @@ gp_predictor_node:
   ros__parameters:
     kernel:
       type: "Matern52"
-      lengthscale: 5.0  You can tune this value
+      lengthscale: 5.0 # You can tune this value
 
 peak_finder_client_node:
   ros__parameters:
