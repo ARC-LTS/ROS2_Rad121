@@ -38,8 +38,17 @@ def generate_launch_description():
         output='screen'
     )
 
+    peak_finder_client_node = Node(
+        package='rad121_monitor',
+        executable='peak_finder_client_node',
+        name='peak_finder_client_node',
+        parameters=[heatmap_param_file],
+        output='screen'
+    )
+
     return LaunchDescription([
         gp_prediction_server_node,
         rad_heatmap_node,
-        rad_zone_planner_node
+        rad_zone_planner_node,
+        peak_finder_client_node
     ])
