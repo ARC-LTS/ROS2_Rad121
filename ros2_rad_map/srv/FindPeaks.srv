@@ -1,0 +1,11 @@
+# Request
+# Same data as GPPredict to build the model
+float64[] observed_x
+float64[] observed_y
+float64[] observed_values_mean
+
+# Optimization parameters
+int32 num_starts # Number of times to run the optimizer from different starting points
+---
+# Response
+geometry_msgs/Point[] peaks

@@ -1,0 +1,6 @@
+# Request
+string basename
+---
+# Response
+bool success
+string message
