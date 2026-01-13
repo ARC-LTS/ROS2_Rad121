@@ -72,10 +72,10 @@ public:
         instantaneous_std_dev_pub_ = it.advertise("/rad_heatmap/instantaneous_std_dev", 1);
         raw_mean_map_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
 
-        gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
+        gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
 
         // Service to allow external nodes to request saving the generated maps
-        save_maps_service_ = this->create_service<rad121_monitor::srv::SaveMaps>(
+        save_maps_service_ = this->create_service<ros2_rad_map::srv::SaveMaps>(
             "save_rad_maps",
             std::bind(&DynamicRadiationHeatmapNode::saveMapsCallback, this, std::placeholders::_1, std::placeholders::_2));
 
@@ -121,11 +121,11 @@ private:
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr zone_sub_;
-    rclcpp::Service<rad121_monitor::srv::SaveMaps>::SharedPtr save_maps_service_;
+    rclcpp::Service<ros2_rad_map::srv::SaveMaps>::SharedPtr save_maps_service_;
     image_transport::Publisher historical_heatmap_pub_, instantaneous_heatmap_pub_;
     image_transport::Publisher historical_std_dev_pub_, instantaneous_std_dev_pub_;
     image_transport::Publisher raw_mean_map_pub_;
-    rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
+    rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
 
     // TF2 for coordinate transformations
     tf2_ros::Buffer tf_buffer_;
@@ -169,8 +169,8 @@ private:
         }
     }
 
-    void saveMapsCallback(const std::shared_ptr<rad121_monitor::srv::SaveMaps::Request> request,
-                          std::shared_ptr<rad121_monitor::srv::SaveMaps::Response> response)
+    void saveMapsCallback(const std::shared_ptr<ros2_rad_map::srv::SaveMaps::Request> request,
+                          std::shared_ptr<ros2_rad_map::srv::SaveMaps::Response> response)
     {
         cv::Mat mean_map_copy, std_dev_map_copy;
         {
@@ -292,7 +292,7 @@ private:
             return;
         }
 
-        auto request_hist = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
+        auto request_hist = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
         for (const auto &s : hist_samples_copy)
         {
             request_hist->observed_x.push_back(s.x);
@@ -300,7 +300,7 @@ private:
             request_hist->observed_values_mean.push_back(s.value);
         }
 
-        auto request_inst = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
+        auto request_inst = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
         for (const auto &s : inst_samples_copy)
         {
             request_inst->observed_x.push_back(s.x);

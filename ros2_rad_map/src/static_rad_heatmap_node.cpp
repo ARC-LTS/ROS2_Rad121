@@ -60,9 +60,9 @@ public:
         std_dev_heatmap_pub_ = it.advertise("/rad_heatmap/std_dev_map", 1);
         raw_heatmap_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
 
-        gp_client_ = this->create_client<rad121_monitor::srv::GPPredict>("predict_gp");
+        gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
 
-        save_maps_service_ = this->create_service<rad121_monitor::srv::SaveMaps>(
+        save_maps_service_ = this->create_service<ros2_rad_map::srv::SaveMaps>(
             "save_rad_maps",
             std::bind(&RadiationHeatmapNode::saveMapsCallback, this, std::placeholders::_1, std::placeholders::_2));
 
@@ -91,8 +91,8 @@ private:
     std::string output_directory_;
 
     void saveMapsCallback(
-        const std::shared_ptr<rad121_monitor::srv::SaveMaps::Request> request,
-        std::shared_ptr<rad121_monitor::srv::SaveMaps::Response> response)
+        const std::shared_ptr<ros2_rad_map::srv::SaveMaps::Request> request,
+        std::shared_ptr<ros2_rad_map::srv::SaveMaps::Response> response)
     {
         cv::Mat mean_map_copy, std_dev_map_copy;
         {
@@ -207,7 +207,7 @@ private:
             map_image_raycasting_copy = map_image_for_raycasting_.clone();
         }
 
-        auto request = std::make_shared<rad121_monitor::srv::GPPredict::Request>();
+        auto request = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
         std::vector<std::pair<int, int>> valid_pixel_coords;
         double res = map_copy.info.resolution;
         double origin_x = map_copy.info.origin.position.x;
@@ -230,7 +230,7 @@ private:
 
         RCLCPP_INFO(this->get_logger(), "Sending %zu points to GP service.", request->points_to_predict.size());
 
-        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords, map_image_raycasting_copy](rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedFuture future) {
+        gp_client_->async_send_request(request, [this, map_copy, samples_copy, valid_pixel_coords, map_image_raycasting_copy](rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedFuture future) {
             auto response = future.get();
             if (!response || response->predicted_mean.size() != valid_pixel_coords.size() || response->predicted_std_dev.size() != valid_pixel_coords.size())
             {
@@ -401,11 +401,11 @@ private:
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
-    rclcpp::Service<rad121_monitor::srv::SaveMaps>::SharedPtr save_maps_service_;
+    rclcpp::Service<ros2_rad_map::srv::SaveMaps>::SharedPtr save_maps_service_;
     image_transport::Publisher heatmap_pub_;
     image_transport::Publisher std_dev_heatmap_pub_;
     image_transport::Publisher raw_heatmap_pub_;
-    rclcpp::Client<rad121_monitor::srv::GPPredict>::SharedPtr gp_client_;
+    rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
     std::string sensor_frame_, map_frame_;

@@ -1,2 +1,2 @@
 std_msgs/Header header
-rad121_monitor/RadZone[] zones
+ros2_rad_map/RadZone[] zones

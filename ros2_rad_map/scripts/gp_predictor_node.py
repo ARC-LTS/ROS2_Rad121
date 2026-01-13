@@ -5,7 +5,7 @@ import numpy as np
 import GPy
 from scipy.optimize import minimize
 from geometry_msgs.msg import Point
-from rad121_monitor.srv import GPPredict, FindPeaks
+from ros2_rad_map.srv import GPPredict, FindPeaks
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header, Float64MultiArray
 from nav_msgs.msg import OccupancyGrid

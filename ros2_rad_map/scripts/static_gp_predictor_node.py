@@ -3,7 +3,7 @@ import rclpy
 from rclpy.node import Node
 import pickle
 import numpy as np
-from rad121_monitor.srv import GPPredict
+from ros2_rad_map.srv import GPPredict
 
 class GPPredictor(Node):
     def __init__(self):

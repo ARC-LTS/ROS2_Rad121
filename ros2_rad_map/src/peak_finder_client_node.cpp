@@ -70,9 +70,9 @@ public:
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
             "/rad", 10, std::bind(&PeakFinderClientNode::radCallback, this, std::placeholders::_1));
 
-        peak_finder_client_ = this->create_client<rad121_monitor::srv::FindPeaks>("/find_rad_peaks");
+        peak_finder_client_ = this->create_client<ros2_rad_map::srv::FindPeaks>("/find_rad_peaks");
 
-        zone_waypoints_pub_ = this->create_publisher<rad121_monitor::msg::RadZoneArray>("/radiation_zones", 10);
+        zone_waypoints_pub_ = this->create_publisher<ros2_rad_map::msg::RadZoneArray>("/radiation_zones", 10);
         marker_array_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/radiation_peak_markers", 10);
         
         timer_ = this->create_wall_timer(
@@ -122,7 +122,7 @@ private:
         }
 
         is_service_running_ = true;
-        auto request = std::make_shared<rad121_monitor::srv::FindPeaks::Request>();
+        auto request = std::make_shared<ros2_rad_map::srv::FindPeaks::Request>();
         request->num_starts = num_starts_;
 
         for (const auto &s : samples_copy) {
@@ -133,7 +133,7 @@ private:
 
         RCLCPP_INFO(this->get_logger(), "Calling /find_rad_peaks service with %zu samples.", samples_copy.size());
 
-        peak_finder_client_->async_send_request(request, [this](rclcpp::Client<rad121_monitor::srv::FindPeaks>::SharedFuture future) {
+        peak_finder_client_->async_send_request(request, [this](rclcpp::Client<ros2_rad_map::srv::FindPeaks>::SharedFuture future) {
             try {
                 auto response = future.get();
                 
@@ -176,7 +176,7 @@ private:
                 // Add any unmatched new peaks as new persistent zones
                 for (size_t i = 0; i < response->peaks.size(); ++i) {
                     if (!matched_new_peaks[i]) {
-                        rad121_monitor::msg::RadZone new_zone;
+                        ros2_rad_map::msg::RadZone new_zone;
                         new_zone.label = std::string(1, next_zone_label_++);
                         new_zone.center = response->peaks[i];
                         persistent_zones_.push_back(new_zone);
@@ -184,7 +184,7 @@ private:
                 }
 
                 // --- FILTERING ---
-                std::vector<rad121_monitor::msg::RadZone> zones_to_publish;
+                std::vector<ros2_rad_map::msg::RadZone> zones_to_publish;
                 for (const auto& zone : persistent_zones_) {
                     if (zone.center.z >= min_peak_mrem_hr_) {
                         zones_to_publish.push_back(zone);
@@ -192,7 +192,7 @@ private:
                 }
 
                 // --- PUBLISH PERSISTENT DATA ---
-                auto zone_array_msg = std::make_unique<rad121_monitor::msg::RadZoneArray>();
+                auto zone_array_msg = std::make_unique<ros2_rad_map::msg::RadZoneArray>();
                 zone_array_msg->header.stamp = this->get_clock()->now();
                 zone_array_msg->header.frame_id = map_frame_;
                 zone_array_msg->zones = zones_to_publish; // Publish filtered zones
@@ -301,14 +301,14 @@ private:
 
     std::mutex data_mutex_;
     std::vector<RadSample> historical_samples_;
-    std::vector<rad121_monitor::msg::RadZone> persistent_zones_;
+    std::vector<ros2_rad_map::msg::RadZone> persistent_zones_;
     char next_zone_label_ = 'A';
     bool is_service_running_ = false;
 
     // ROS Comms
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
-    rclcpp::Client<rad121_monitor::srv::FindPeaks>::SharedPtr peak_finder_client_;
-    rclcpp::Publisher<rad121_monitor::msg::RadZoneArray>::SharedPtr zone_waypoints_pub_;
+    rclcpp::Client<ros2_rad_map::srv::FindPeaks>::SharedPtr peak_finder_client_;
+    rclcpp::Publisher<ros2_rad_map::msg::RadZoneArray>::SharedPtr zone_waypoints_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_array_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
 

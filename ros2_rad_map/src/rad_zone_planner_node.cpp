@@ -46,7 +46,7 @@ public:
 
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(map_topic, map_qos, std::bind(&RadZonePlannerNode::mapCallback, this, std::placeholders::_1));
         heatmap_sub_ = this->create_subscription<sensor_msgs::msg::Image>(heatmap_topic, 10, std::bind(&RadZonePlannerNode::heatmapCallback, this, std::placeholders::_1));
-        peak_sub_ = this->create_subscription<rad121_monitor::msg::RadZoneArray>(
+        peak_sub_ = this->create_subscription<ros2_rad_map::msg::RadZoneArray>(
             peaks_topic, 10,
             std::bind(&RadZonePlannerNode::peakCallback, this, std::placeholders::_1));
 
@@ -67,7 +67,7 @@ private:
         }
     }
 
-    void peakCallback(const rad121_monitor::msg::RadZoneArray::SharedPtr msg)
+    void peakCallback(const ros2_rad_map::msg::RadZoneArray::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(peak_mutex_);
         latest_peaks_.clear();
@@ -225,7 +225,7 @@ private:
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;
-    rclcpp::Subscription<rad121_monitor::msg::RadZoneArray>::SharedPtr peak_sub_;
+    rclcpp::Subscription<ros2_rad_map::msg::RadZoneArray>::SharedPtr peak_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr zone_marker_pub_;
 };
 
