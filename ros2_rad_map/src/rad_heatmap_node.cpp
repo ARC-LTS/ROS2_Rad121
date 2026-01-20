@@ -13,10 +13,8 @@
 #include "ros2_rad_map/srv/gp_predict.hpp"
 #include "ros2_rad_map/srv/save_maps.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
-
 #include <vector>
 #include <mutex>
-#include <deque>
 #include <thread>
 #include <future>
 #include <opencv2/opencv.hpp>
@@ -30,7 +28,6 @@ struct RadiationSample
     int id;
 };
 
-// Forward declarations for helper functions
 cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map);
 void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std::string &unit_label);
 
@@ -41,11 +38,9 @@ public:
 
     void init()
     {
-        // Declare and retrieve parameters for node configuration
         this->declare_parameter<std::string>("sensor_frame", "base_link");
         this->declare_parameter<std::string>("map_frame", "map");
         this->declare_parameter<double>("background_threshold_mrem_hr", 0.1);
-        this->declare_parameter<int>("recent_samples_window_size", 20);
         this->declare_parameter<std::string>("output_directory", "/tmp");
         this->declare_parameter<int>("raycasting_max_sources", 5);
         this->declare_parameter<double>("raycasting_max_distance_m", 10.0);
@@ -53,92 +48,72 @@ public:
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
         background_threshold_mrem_hr_ = this->get_parameter("background_threshold_mrem_hr").as_double();
-        recent_samples_window_size_ = this->get_parameter("recent_samples_window_size").as_int();
         output_directory_ = this->get_parameter("output_directory").as_string();
         raycasting_max_sources_ = this->get_parameter("raycasting_max_sources").as_int();
         raycasting_max_distance_m_ = this->get_parameter("raycasting_max_distance_m").as_double();
 
-        map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(), std::bind(&DynamicRadiationHeatmapNode::mapCallback, this, std::placeholders::_1));
+        rclcpp::QoS map_qos(rclcpp::KeepLast(1));
+        map_qos.transient_local().reliable();
+        map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>("/map", map_qos, std::bind(&DynamicRadiationHeatmapNode::mapCallback, this, std::placeholders::_1));
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/rad", 10, std::bind(&DynamicRadiationHeatmapNode::radCallback, this, std::placeholders::_1));
         zone_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
             "/radiation_zone_markers", 10,
             std::bind(&DynamicRadiationHeatmapNode::zoneCallback, this, std::placeholders::_1));
 
-        // Setup publishers for four different heatmap visualizations
         image_transport::ImageTransport it(this->shared_from_this());
         historical_heatmap_pub_ = it.advertise("/rad_heatmap/historical_mean", 1);
-        instantaneous_heatmap_pub_ = it.advertise("/rad_heatmap/instantaneous_mean", 1);
         historical_std_dev_pub_ = it.advertise("/rad_heatmap/historical_std_dev", 1);
-        instantaneous_std_dev_pub_ = it.advertise("/rad_heatmap/instantaneous_std_dev", 1);
         raw_mean_map_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
 
         gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
 
-        // Service to allow external nodes to request saving the generated maps
         save_maps_service_ = this->create_service<ros2_rad_map::srv::SaveMaps>(
             "save_rad_maps",
             std::bind(&DynamicRadiationHeatmapNode::saveMapsCallback, this, std::placeholders::_1, std::placeholders::_2));
 
-        RCLCPP_INFO(this->get_logger(), "Node initialized. Saving maps to '%s'", output_directory_.c_str());
-        RCLCPP_INFO(this->get_logger(), "Waiting for GP service 'predict_gp'...");
+        RCLCPP_INFO(this->get_logger(), "Heatmap Node initialized. Waiting for GP service...");
         if (!gp_client_->wait_for_service(std::chrono::seconds(10)))
         {
-            RCLCPP_ERROR(this->get_logger(), "GP service not available after waiting. Exiting.");
-            if (rclcpp::ok())
-            {
-                rclcpp::shutdown();
-            }
+            RCLCPP_ERROR(this->get_logger(), "GP service not available. Exiting.");
+            if (rclcpp::ok()) { rclcpp::shutdown(); }
             return;
         }
-        RCLCPP_INFO(this->get_logger(), "GP service is available. Node is ready.");
+        RCLCPP_INFO(this->get_logger(), "GP service available. Node is ready.");
     }
 
 private:
-    // --- Member Variables ---
-
-    // Mutexes for thread-safe access to shared data
     std::mutex data_mutex_;
     std::mutex update_mutex_;
     std::mutex zone_mutex_;
 
-    // Node state flags
     bool map_received_ = false;
     bool is_updating_ = false;
     int next_sample_id_ = 0;
 
-    // Data Storage
     nav_msgs::msg::OccupancyGrid base_map_;
     std::vector<RadiationSample> historical_samples_;
-    std::deque<RadiationSample> recent_samples_;
     std::vector<std::vector<cv::Point>> zone_contours_;
 
-    // OpenCV Mats for image processing and storage
     cv::Mat map_image_for_raycasting_;
     cv::Mat latest_historical_mean_image_;
     cv::Mat latest_historical_std_dev_image_;
 
-    // ROS Communications
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr zone_sub_;
     rclcpp::Service<ros2_rad_map::srv::SaveMaps>::SharedPtr save_maps_service_;
-    image_transport::Publisher historical_heatmap_pub_, instantaneous_heatmap_pub_;
-    image_transport::Publisher historical_std_dev_pub_, instantaneous_std_dev_pub_;
+    image_transport::Publisher historical_heatmap_pub_;
+    image_transport::Publisher historical_std_dev_pub_;
     image_transport::Publisher raw_mean_map_pub_;
     rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
 
-    // TF2 for coordinate transformations
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
 
-    // Parameters
     std::string sensor_frame_, map_frame_, output_directory_;
     double background_threshold_mrem_hr_;
-    size_t recent_samples_window_size_;
     int raycasting_max_sources_;
     double raycasting_max_distance_m_;
-
-    // --- Service and Topic Callbacks ---
 
     void zoneCallback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
     {
@@ -146,7 +121,7 @@ private:
         zone_contours_.clear();
 
         if (!map_received_) {
-            return; // Need map info for coordinate conversion
+            return;
         }
 
         double res = base_map_.info.resolution;
@@ -159,7 +134,7 @@ private:
                 std::vector<cv::Point> contour;
                 for (const auto& world_point : marker.points) {
                     int px = static_cast<int>((world_point.x - origin_x) / res);
-                    int py = map_height - 1 - static_cast<int>((world_point.y - origin_y) / res); // Y-flip
+                    int py = map_height - 1 - static_cast<int>((world_point.y - origin_y) / res);
                     contour.push_back(cv::Point(px, py));
                 }
                 if (!contour.empty()) {
@@ -198,7 +173,6 @@ private:
         {
             response->success = true;
             response->message = "Saved maps to " + mean_path.string() + " and " + std_dev_path.string();
-            RCLCPP_INFO(this->get_logger(), "%s", response->message.c_str());
         }
         else
         {
@@ -213,11 +187,10 @@ private:
         std::lock_guard<std::mutex> lock(data_mutex_);
         base_map_ = *msg;
         map_received_ = true;
-        // Pre-process the map into a binary image for faster raycasting
         map_image_for_raycasting_ = cv::Mat(base_map_.info.height, base_map_.info.width, CV_8UC1);
         for (unsigned int i = 0; i < base_map_.data.size(); ++i)
         {
-            map_image_for_raycasting_.data[i] = (base_map_.data[i] > 50) ? 255 : 0; // 255=Wall, 0=Free
+            map_image_for_raycasting_.data[i] = (base_map_.data[i] > 50) ? 255 : 0;
         }
         RCLCPP_INFO(this->get_logger(), "Map has been updated and stored.");
     }
@@ -231,20 +204,14 @@ private:
         {
             geometry_msgs::msg::PoseStamped pose_in_sensor, pose_in_map;
             pose_in_sensor.header.frame_id = sensor_frame_;
-            pose_in_sensor.header.stamp = rclcpp::Time(0); // Request latest available transform
+            pose_in_sensor.header.stamp = rclcpp::Time(0);
             tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(500));
 
-            { // Scope for the lock_guard
+            {
                 std::lock_guard<std::mutex> lock(data_mutex_);
                 RadiationSample sample = {pose_in_map.pose.position.x, pose_in_map.pose.position.y, msg->data[1], next_sample_id_++};
                 historical_samples_.push_back(sample);
-                recent_samples_.push_back(sample);
-                if (recent_samples_.size() > recent_samples_window_size_)
-                {
-                    recent_samples_.pop_front();
-                }
             }
-            RCLCPP_DEBUG(this->get_logger(), "New radiation sample logged. Triggering GP update.");
             triggerGPUpdate();
         }
         catch (const tf2::TransformException &ex)
@@ -253,26 +220,20 @@ private:
         }
     }
 
-    // --- Core Logic ---
-
     void triggerGPUpdate()
     {
-        { // Lock scope to prevent concurrent updates
+        {
             std::lock_guard<std::mutex> lock(update_mutex_);
-            if (is_updating_)
-            {
-                RCLCPP_INFO(this->get_logger(), "Update already in progress. Skipping trigger.");
-                return;
-            }
+            if (is_updating_) { return; }
             is_updating_ = true;
         }
 
         nav_msgs::msg::OccupancyGrid map_copy;
         cv::Mat raycasting_map_copy;
-        std::vector<RadiationSample> hist_samples_copy, inst_samples_copy;
+        std::vector<RadiationSample> hist_samples_copy;
         bool can_update = false;
 
-        { // Lock scope to safely copy shared data
+        {
             std::lock_guard<std::mutex> lock(data_mutex_);
             if (map_received_ && !historical_samples_.empty())
             {
@@ -280,7 +241,6 @@ private:
                 map_copy = base_map_;
                 raycasting_map_copy = map_image_for_raycasting_.clone();
                 hist_samples_copy = historical_samples_;
-                inst_samples_copy.assign(recent_samples_.begin(), recent_samples_.end());
             }
         }
 
@@ -288,24 +248,15 @@ private:
         {
             std::lock_guard<std::mutex> lock(update_mutex_);
             is_updating_ = false;
-            RCLCPP_WARN(this->get_logger(), "Map not received or no samples, cannot update.");
             return;
         }
 
-        auto request_hist = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
+        auto request = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
         for (const auto &s : hist_samples_copy)
         {
-            request_hist->observed_x.push_back(s.x);
-            request_hist->observed_y.push_back(s.y);
-            request_hist->observed_values_mean.push_back(s.value);
-        }
-
-        auto request_inst = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
-        for (const auto &s : inst_samples_copy)
-        {
-            request_inst->observed_x.push_back(s.x);
-            request_inst->observed_y.push_back(s.y);
-            request_inst->observed_values_mean.push_back(s.value);
+            request->observed_x.push_back(s.x);
+            request->observed_y.push_back(s.y);
+            request->observed_values_mean.push_back(s.value);
         }
 
         std::vector<geometry_msgs::msg::Point> points_to_predict;
@@ -317,7 +268,6 @@ private:
         {
             for (unsigned int x = 0; x < map_copy.info.width; ++x)
             {
-                // Predict only for free space (value < 50)
                 if (map_copy.data[y * map_copy.info.width + x] < 50 && map_copy.data[y * map_copy.info.width + x] >= 0)
                 {
                     geometry_msgs::msg::Point p;
@@ -328,75 +278,44 @@ private:
                 }
             }
         }
-        request_hist->points_to_predict = points_to_predict;
-        request_inst->points_to_predict = points_to_predict;
+        request->points_to_predict = points_to_predict;
 
-        RCLCPP_INFO(this->get_logger(), "Sending requests: Historical (%zu samples), Instantaneous (%zu samples). Predicting for %zu points.",
-                    hist_samples_copy.size(), inst_samples_copy.size(), valid_pixel_coords.size());
+        auto future = gp_client_->async_send_request(request);
 
-        auto future_hist = gp_client_->async_send_request(request_hist);
-        auto future_inst = gp_client_->async_send_request(request_inst);
+        std::thread([this, future = std::move(future), map_copy, raycasting_map_copy, valid_pixel_coords, hist_samples_copy]() mutable {
+            try
+            {
+                auto response = future.get();
+                if (!response || response->predicted_mean.size() != valid_pixel_coords.size())
+                {
+                    RCLCPP_WARN(this->get_logger(), "GP service returned invalid data or timed out.");
+                    std::lock_guard<std::mutex> lock(update_mutex_);
+                    is_updating_ = false;
+                    return;
+                }
+                
+                cv::Mat hist_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                cv::Mat hist_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
+                for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
+                {
+                    hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_mean[i];
+                    hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_std_dev[i];
+                }
 
-        std::thread([this, future_hist = std::move(future_hist), future_inst = std::move(future_inst),
-                     map_copy, raycasting_map_copy, valid_pixel_coords, hist_samples_copy, inst_samples_copy]() mutable
-                    {
-                        try
-                        {
-                            auto response_hist = future_hist.get();
-                            auto response_inst = future_inst.get();
+                cv::Mat hist_mean_occluded = applyOcclusionFloodFill(hist_mean_raw, hist_samples_copy, map_copy, raycasting_map_copy);
+                cv::Mat hist_std_occluded = applyOcclusionFloodFill(hist_std_raw, hist_samples_copy, map_copy, raycasting_map_copy);
 
-                            cv::Mat hist_mean_raw, hist_std_raw, inst_mean_raw, inst_std_raw;
+                publishHeatmaps(hist_mean_occluded, hist_std_occluded, map_copy);
+            }
+            catch (const std::exception &e)
+            {
+                RCLCPP_ERROR(this->get_logger(), "Exception caught in GP update thread: %s", e.what());
+            }
 
-                            if (!response_hist || response_hist->predicted_mean.size() != valid_pixel_coords.size() ||
-                                !response_inst || response_inst->predicted_mean.size() != valid_pixel_coords.size())
-                            {
-                                RCLCPP_WARN(this->get_logger(), "GP service returned invalid data or timed out.");
-                                std::lock_guard<std::mutex> lock(update_mutex_);
-                                is_updating_ = false;
-                                return;
-                            }
-                            
-                            // Get raw maps from GP responses
-                            hist_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                            hist_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                            for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
-                            {
-                                hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_mean[i];
-                                hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_hist->predicted_std_dev[i];
-                            }
-                            inst_mean_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                            inst_std_raw = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_32F);
-                            for (size_t i = 0; i < valid_pixel_coords.size(); ++i)
-                            {
-                                inst_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_mean[i];
-                                inst_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response_inst->predicted_std_dev[i];
-                            }
-
-                            RCLCPP_INFO(this->get_logger(), "Both GP responses received. Applying occlusion...");
-
-                            cv::Mat hist_mean_occluded = applyOcclusionFloodFill(hist_mean_raw, hist_samples_copy, map_copy, raycasting_map_copy);
-                            cv::Mat inst_mean_occluded = applyOcclusionFloodFill(inst_mean_raw, inst_samples_copy, map_copy, raycasting_map_copy);
-                            cv::Mat hist_std_occluded = applyOcclusionFloodFill(hist_std_raw, hist_samples_copy, map_copy, raycasting_map_copy);
-                            cv::Mat inst_std_occluded = applyOcclusionFloodFill(inst_std_raw, inst_samples_copy, map_copy, raycasting_map_copy);
-
-                            publishHeatmaps(hist_mean_occluded, inst_mean_occluded, hist_std_occluded, inst_std_occluded, map_copy);
-                        }
-                        catch (const cv::Exception &e)
-                        {
-                            RCLCPP_ERROR(this->get_logger(), "OpenCV Exception in GP update thread: %s", e.what());
-                        }
-                        catch (const std::exception &e)
-                        {
-                            RCLCPP_ERROR(this->get_logger(), "Exception caught in GP update thread: %s", e.what());
-                        }
-
-                        std::lock_guard<std::mutex> lock(update_mutex_);
-                        is_updating_ = false;
-                        RCLCPP_INFO(this->get_logger(), "Update cycle complete."); })
-            .detach();
+            std::lock_guard<std::mutex> lock(update_mutex_);
+            is_updating_ = false;
+        }).detach();
     }
-
-    // --- Helper and Visualization Functions ---
 
     cv::Mat applyOcclusionFloodFill(const cv::Mat &raw_heatmap, const std::vector<RadiationSample> &sources,
                                     const nav_msgs::msg::OccupancyGrid &map_info, const cv::Mat &raycasting_map)
@@ -473,24 +392,20 @@ private:
         return occluded_heatmap;
     }
 
-    void publishHeatmaps(const cv::Mat &hist_mean, const cv::Mat &inst_mean, const cv::Mat &hist_std, const cv::Mat &inst_std, const nav_msgs::msg::OccupancyGrid &map_copy)
+    void publishHeatmaps(const cv::Mat &hist_mean, const cv::Mat &hist_std, const nav_msgs::msg::OccupancyGrid &map_copy)
     {
         cv::Mat base_bgr = createBaseMapImage(map_copy);
         std_msgs::msg::Header h;
         h.stamp = this->now();
         h.frame_id = map_frame_;
 
-        // The raw map for the planner should remain unflipped, as the planner expects it that way.
         if (!hist_mean.empty()) {
             raw_mean_map_pub_.publish(*cv_bridge::CvImage(h, "32FC1", hist_mean).toImageMsg());
         }
 
-        // The GP heatmaps are "upside-down", flip them to match the right-side-up base_bgr
-        cv::Mat flipped_hist_mean, flipped_inst_mean, flipped_hist_std, flipped_inst_std;
+        cv::Mat flipped_hist_mean, flipped_hist_std;
         if (!hist_mean.empty()) cv::flip(hist_mean, flipped_hist_mean, 0);
-        if (!inst_mean.empty()) cv::flip(inst_mean, flipped_inst_mean, 0);
         if (!hist_std.empty()) cv::flip(hist_std, flipped_hist_std, 0);
-        if (!inst_std.empty()) cv::flip(inst_std, flipped_inst_std, 0);
 
         cv::Mat free_space_mask(map_copy.info.height, map_copy.info.width, CV_8UC1);
         for (unsigned int y = 0; y < map_copy.info.height; ++y) {
@@ -520,27 +435,6 @@ private:
             historical_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_std).toImageMsg());
         }
 
-        auto blended_inst_mean = createBlendedMap(base_bgr, flipped_inst_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask);
-        if (!blended_inst_mean.empty())
-        {
-            std::lock_guard<std::mutex> lock(zone_mutex_);
-            if (!zone_contours_.empty()) {
-                cv::drawContours(blended_inst_mean, zone_contours_, -1, cv::Scalar(255, 0, 255), 2);
-            }
-            instantaneous_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_inst_mean).toImageMsg());
-        }
-
-        auto blended_inst_std = createBlendedMap(base_bgr, flipped_inst_std, "Std. Dev.", 0.0, free_space_mask);
-        if (!blended_inst_std.empty())
-        {
-            std::lock_guard<std::mutex> lock(zone_mutex_);
-            if (!zone_contours_.empty()) {
-                cv::drawContours(blended_inst_std, zone_contours_, -1, cv::Scalar(255, 0, 255), 2);
-            }
-            instantaneous_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_inst_std).toImageMsg());
-        }
-
-        // Store historical maps for the save service
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             if (!blended_hist_mean.empty())
@@ -587,12 +481,10 @@ private:
 
         cv::Mat value_mask;
         cv::compare(field, threshold, value_mask, cv::CMP_LT);
-        color_field.setTo(cv::Scalar(0, 0, 0, 0), value_mask); // Keep low values transparent
+        color_field.setTo(cv::Scalar(0, 0, 0, 0), value_mask);
         return color_field;
     }
 };
-
-// --- Helper Function Implementations ---
 
 cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map)
 {
@@ -602,13 +494,13 @@ cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map)
         for (unsigned int x = 0; x < map.info.width; ++x)
         {
             int8_t o = map.data[y * map.info.width + x];
-            unsigned int image_y = map.info.height - 1 - y; // Correctly flip Y-axis
+            unsigned int image_y = map.info.height - 1 - y;
             if (o == -1)
-                base_gray.at<uchar>(image_y, x) = 205; // Unknown
+                base_gray.at<uchar>(image_y, x) = 205;
             else if (o >= 50)
-                base_gray.at<uchar>(image_y, x) = 0; // Obstacle
+                base_gray.at<uchar>(image_y, x) = 0;
             else
-                base_gray.at<uchar>(image_y, x) = 255; // Free
+                base_gray.at<uchar>(image_y, x) = 255;
         }
     }
     cv::Mat bgr;

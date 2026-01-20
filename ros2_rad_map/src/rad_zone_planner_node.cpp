@@ -21,8 +21,6 @@ public:
         this->declare_parameter<double>("radiation_threshold", 2.0);
         this->declare_parameter<double>("min_zone_area", 50.0);
         this->declare_parameter<std::string>("map_frame", "map");
-
-        // Parameters for watershed algorithm hypertuning
         this->declare_parameter<int>("noise_removal_kernel_size", 3);
         this->declare_parameter<int>("noise_removal_iterations", 2);
         this->declare_parameter<int>("background_dilation_iterations", 3);
@@ -34,12 +32,10 @@ public:
         radiation_threshold_ = this->get_parameter("radiation_threshold").as_double();
         min_zone_area_ = this->get_parameter("min_zone_area").as_double();
         map_frame_ = this->get_parameter("map_frame").as_string();
-
         noise_removal_kernel_size_ = this->get_parameter("noise_removal_kernel_size").as_int();
         noise_removal_iterations_ = this->get_parameter("noise_removal_iterations").as_int();
         background_dilation_iterations_ = this->get_parameter("background_dilation_iterations").as_int();
         peak_seed_radius_px_ = this->get_parameter("peak_seed_radius_px").as_int();
-        
         
         rclcpp::QoS map_qos(rclcpp::KeepLast(1));
         map_qos.transient_local().reliable();
@@ -59,11 +55,9 @@ private:
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        // Update map info every time it's received
         map_info_ = msg->info;
         if (!map_info_received_) {
             map_info_received_ = true;
-            RCLCPP_INFO(this->get_logger(), "Map info received.");
         }
     }
 
@@ -80,7 +74,6 @@ private:
     {
         std::unique_lock<std::mutex> lock(map_mutex_, std::try_to_lock);
         if (!lock.owns_lock() || !map_info_received_) {
-            RCLCPP_WARN_ONCE(this->get_logger(), "Map info not yet received, skipping heatmap processing.");
             return;
         }
 
@@ -95,27 +88,21 @@ private:
         cv::Mat flipped_heatmap;
         cv::flip(cv_ptr->image, flipped_heatmap, 0);
 
-        // --- WATERSHED LOGIC ---
-        // 1. Initial Thresholding
         cv::Mat binary_map;
         cv::threshold(flipped_heatmap, binary_map, radiation_threshold_, 255, cv::THRESH_BINARY);
         binary_map.convertTo(binary_map, CV_8U);
 
-        // 2. Noise removal using Morphological Opening
         cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(noise_removal_kernel_size_, noise_removal_kernel_size_));
         cv::Mat opening;
         cv::morphologyEx(binary_map, opening, cv::MORPH_OPEN, kernel, cv::Point(-1, -1), noise_removal_iterations_);
 
-        // 3. Define "Sure Background" by dilating the cleaned-up areas
         cv::Mat sure_background;
         cv::dilate(opening, sure_background, kernel, cv::Point(-1, -1), background_dilation_iterations_);
 
-        // 4. Define "Sure Foreground" from peak locations
         cv::Mat sure_foreground = cv::Mat::zeros(opening.size(), CV_8U);
         {
             std::lock_guard<std::mutex> lock(peak_mutex_);
             if(latest_peaks_.empty()) {
-                RCLCPP_INFO_ONCE(this->get_logger(), "No peaks received yet, skipping zone generation.");
                 return;
             }
             
@@ -125,34 +112,28 @@ private:
             int map_height = map_info_.height;
 
             for(const auto& peak : latest_peaks_) {
-                // Convert world peak to pixel coords for the flipped (right-side-up) heatmap
                 int px = static_cast<int>((peak.x - origin_x) / res);
                 int py = map_height - 1 - static_cast<int>((peak.y - origin_y) / res);
 
                 if (px >= 0 && px < sure_foreground.cols && py >= 0 && py < sure_foreground.rows) {
-                    // Draw a small circle at the peak location to act as a seed for watershed
                     cv::circle(sure_foreground, cv::Point(px, py), peak_seed_radius_px_, cv::Scalar(255), -1);
                 }
             }
         }
 
-        // 5. Define the "Unknown" region
         cv::Mat unknown;
         cv::subtract(sure_background, sure_foreground, unknown);
 
-        // 6. Create markers for the watershed algorithm
         cv::Mat markers;
         cv::connectedComponents(sure_foreground, markers);
         markers = markers + 1;
         markers.setTo(0, unknown == 255);
 
-        // 7. Apply the watershed algorithm
         cv::Mat flipped_heatmap_8uc3, scaled_heatmap;
         cv::normalize(flipped_heatmap, scaled_heatmap, 0, 255, cv::NORM_MINMAX, CV_8U);
         cv::cvtColor(scaled_heatmap, flipped_heatmap_8uc3, cv::COLOR_GRAY2BGR);
         cv::watershed(flipped_heatmap_8uc3, markers);
 
-        // --- CONTOUR EXTRACTION AND PUBLISHING ---
         std::vector<std::vector<cv::Point>> final_contours;
         double num_components;
         cv::minMaxLoc(markers, NULL, &num_components);
@@ -167,7 +148,6 @@ private:
             }
         }
 
-        // --- MESSAGE CREATION ---
         visualization_msgs::msg::MarkerArray marker_array;
         visualization_msgs::msg::Marker clear_marker;
         clear_marker.header.frame_id = map_frame_;
@@ -177,7 +157,6 @@ private:
 
         int marker_id = 1;
         for (const auto& contour : final_contours) {
-            // Create markers for visualization in RViz
             visualization_msgs::msg::Marker zone_marker;
             zone_marker.header.stamp = this->get_clock()->now();
             zone_marker.header.frame_id = map_frame_;
@@ -188,7 +167,7 @@ private:
             
             zone_marker.pose.orientation.w = 1.0;
             zone_marker.scale.x = 0.05;
-            zone_marker.color.r = 1.0; zone_marker.color.g = 0.0; zone_marker.color.b = 1.0; zone_marker.color.a = 1.0; // Magenta
+            zone_marker.color.r = 1.0; zone_marker.color.g = 0.0; zone_marker.color.b = 1.0; zone_marker.color.a = 1.0;
 
             for (const auto& pixel_point : contour) {
                 geometry_msgs::msg::Point world_point;
@@ -198,7 +177,7 @@ private:
                 zone_marker.points.push_back(world_point);
             }
             if (!contour.empty()) {
-                zone_marker.points.push_back(zone_marker.points.front()); // Close the loop
+                zone_marker.points.push_back(zone_marker.points.front());
             }
             
             marker_array.markers.push_back(zone_marker);
@@ -216,12 +195,10 @@ private:
     std::string map_frame_;
     std::vector<geometry_msgs::msg::Point> latest_peaks_;
 
-    // Watershed hypertuning parameters
     int noise_removal_kernel_size_;
     int noise_removal_iterations_;
     int background_dilation_iterations_;
     int peak_seed_radius_px_;
-
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;

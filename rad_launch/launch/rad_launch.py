@@ -6,21 +6,28 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 def generate_launch_description():
     """
-    Master launch file that starts the radiation simulation and the heatmap generation.
+    Master launch file that starts the radiation simulation and the mapping/analysis pipeline.
     """
-    # Get the share directory of the rad_launch package where the launch files were moved.
     rad_launch_share = get_package_share_directory('rad_launch')
 
     # --- 1. Include Simulation Launch ---
-    # This will launch rad_field_server and rad_sensor_simulator from the rad_simulation package.
+    # This launches rad_field_server and rad_sensor_simulator.
     simulation_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(rad_launch_share, 'launch', 'simulation_launch.py')
         )
     )
 
-    # --- 2. Include Heatmap Launch ---
-    # This will launch rad_heatmap_node and gp_predictor_node from the ros2_rad_map package.
+    # --- 2. Include GP Predictor Launch ---
+    # This launches the core GP service node.
+    gp_predictor_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(rad_launch_share, 'launch', 'gp_predictor_launch.py')
+        )
+    )
+
+    # --- 3. Include Heatmap Launch ---
+    # This launches the client node that generates heatmap images.
     rad_heatmap_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(rad_launch_share, 'launch', 'rad_heatmap_launch.py')
@@ -30,5 +37,6 @@ def generate_launch_description():
     # --- Return the master launch description ---
     return LaunchDescription([
         simulation_launch,
+        gp_predictor_launch,
         rad_heatmap_launch,
     ])

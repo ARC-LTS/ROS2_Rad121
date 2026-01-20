@@ -62,25 +62,6 @@ target_link_libraries(rad_heatmap_node
   ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
-add_executable(static_rad_heatmap_node src/static_rad_heatmap_node.cpp)
-ament_target_dependencies(static_rad_heatmap_node
-rclcpp
-cv_bridge
-sensor_msgs
-image_transport
-std_msgs
-std_srvs
-nav_msgs
-tf2
-tf2_ros
-tf2_geometry_msgs
-visualization_msgs
-)
-target_link_libraries(static_rad_heatmap_node
-  ${OpenCV_LIBRARIES}
-  ${PROJECT_NAME}__rosidl_typesupport_cpp
-)
-
 add_executable(rad_pointcloud_node src/rad_pointcloud_node.cpp)
 ament_target_dependencies(rad_pointcloud_node
   rclcpp
@@ -97,18 +78,6 @@ ament_target_dependencies(rad_pointcloud_node
 target_link_libraries(rad_pointcloud_node
   ${PCL_LIBRARIES}
   ${OCTOMAP_LIBRARIES}
-)
-
-add_executable(zone_selector_node src/zone_selector.cpp)
-ament_target_dependencies(zone_selector_node
-  rclcpp
-  geometry_msgs
-  tf2_ros
-  tf2_geometry_msgs
-  std_srvs
-)
-target_link_libraries(zone_selector_node
-  yaml-cpp
 )
 
 add_executable(rad_mapper_node src/rad_mapper_node.cpp)
@@ -147,19 +116,30 @@ target_link_libraries(peak_finder_client_node
   ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
+add_executable(gp_visualizer_node src/gp_visualizer_node.cpp)
+ament_target_dependencies(gp_visualizer_node
+  rclcpp
+  nav_msgs
+  std_msgs
+  sensor_msgs
+  tf2_ros
+  tf2_geometry_msgs
+)
+target_link_libraries(gp_visualizer_node
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
+)
+
 install(TARGETS
   rad_heatmap_node
-  static_rad_heatmap_node
   rad_mapper_node
   rad_pointcloud_node
-  zone_selector_node
   rad_zone_planner_node
   peak_finder_client_node
+  gp_visualizer_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS
   scripts/gp_predictor_node.py
-  scripts/static_gp_predictor_node.py 
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -168,8 +148,6 @@ install(DIRECTORY include/
 
 install (DIRECTORY models
   DESTINATION share/${PROJECT_NAME})
-
-
 
 install(DIRECTORY params
   DESTINATION share/${PROJECT_NAME})

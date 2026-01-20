@@ -1,19 +1,18 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <filesystem> // Requires C++17
+#include <filesystem>
 #include <functional>
-#include <iomanip> // For std::put_time
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <sstream> // For formatting timestamp
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-// ROS / TF2 Includes
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
 #include "rclcpp/clock.hpp"
@@ -33,7 +32,6 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
-// PCL Includes
 #include <pcl/io/ply_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -43,7 +41,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// --- Voxel Grid Data Structures ---
 struct VoxelIndex
 {
     int x, y, z;
@@ -51,6 +48,7 @@ struct VoxelIndex
         return x == other.x && y == other.y && z == other.z;
     }
 };
+
 struct VoxelIndexHash
 {
     std::size_t operator()(const VoxelIndex &vi) const {
@@ -60,12 +58,12 @@ struct VoxelIndexHash
         return h1 ^ (h2 << 1) ^ (h3 << 2);
     }
 };
+
 struct PointData
 {
     float x, y, z;
-    float intensity; // Absolute intensity
+    float intensity;
 };
-// --- End Voxel Grid Data Structures ---
 
 class RadiationPointcloudNode : public rclcpp::Node
 {
@@ -76,31 +74,23 @@ public:
           tf_buffer_(clock_),
           tf_listener_(tf_buffer_)
     {
-        RCLCPP_INFO(this->get_logger(), "Initializing RadiationPointCloudGenerator Node...");
-
         this->setupParameters();
-        this->logParameters();
         this->validateParameters();
 
         global_max_absolute_intensity_ = min_intensity_publish_;
 
         this->setupROSInterfaces();
 
-        // Register shutdown callback if enabled
         if (save_on_shutdown_) {
-             // Simply call the function to register the callback, no assignment needed
              rclcpp::on_shutdown(
                  [this]() { this->onShutdownCallback(); }
              );
              RCLCPP_INFO(this->get_logger(), "Registered automatic PLY save on shutdown.");
-        } else {
-             RCLCPP_INFO(this->get_logger(), "Automatic PLY save on shutdown is disabled.");
         }
         RCLCPP_INFO(this->get_logger(), "Radiation PointCloud Generator Node Initialized.");
     }
 
 private:
-    // --- Parameter Handling ---
     void setupParameters()
     {
         this->declare_parameter<std::string>("radiation_topic", "/rad");
@@ -140,18 +130,6 @@ private:
         tf_timeout_ = std::chrono::duration<double>(timeout_seconds);
     }
 
-    void logParameters()
-    {
-        RCLCPP_INFO(this->get_logger(), "Parameters loaded:");
-        RCLCPP_INFO(this->get_logger(), "  Radiation topic: %s", radiation_topic_.c_str());
-        RCLCPP_INFO(this->get_logger(), "  LiDAR topic: %s", lidar_topic_.c_str());
-        // ... (rest of logging as before) ...
-        RCLCPP_INFO(this->get_logger(), "  TF Lookup Timeout: %.2f s", tf_timeout_.count());
-        RCLCPP_INFO(this->get_logger(), "  Save on Shutdown: %s", save_on_shutdown_ ? "true" : "false");
-        RCLCPP_INFO(this->get_logger(), "  Save PLY Directory: %s", save_ply_directory_.c_str());
-        RCLCPP_INFO(this->get_logger(), "  Save PLY Base Name: %s", save_ply_base_name_.c_str());
-    }
-
     void validateParameters()
     {
          if (voxel_resolution_ <= 0.0) {
@@ -184,14 +162,10 @@ private:
             "~/save_ply",
             std::bind(&RadiationPointcloudNode::savePlyCallback, this,
                       std::placeholders::_1, std::placeholders::_2));
-        RCLCPP_INFO(this->get_logger(), "Manual Save PLY service available at '~/save_ply'");
     }
-
-    // --- Callbacks ---
 
     void radCallback(const std_msgs::msg::Float64MultiArray::ConstSharedPtr msg) {
         if (msg->data.empty()) {
-            RCLCPP_WARN_ONCE(this->get_logger(), "Received empty data array on %s topic.", radiation_topic_.c_str());
             return;
         }
         latest_cpm_ = msg->data[0];
@@ -313,7 +287,7 @@ private:
                      continue;
                  }
                 *iter_x = p_data.x; *iter_y = p_data.y; *iter_z = p_data.z;
-                *iter_intensity = p_data.intensity; // Store absolute intensity temporarily
+                *iter_intensity = p_data.intensity;
                 ++iter_x; ++iter_y; ++iter_z; ++iter_intensity;
             }
         }
@@ -332,7 +306,7 @@ private:
             float absolute_intensity = *iter_norm_intensity;
             double normalized_value = std::max(0.0, std::min(1.0, (absolute_intensity - min_norm) / norm_range));
             float output_intensity = static_cast<float>(normalized_value * 100.0);
-            *iter_norm_intensity = output_intensity; // Overwrite with normalized [0-100]
+            *iter_norm_intensity = output_intensity;
 
             if (absolute_intensity > 1e-6) {
                  sum_x_intensity += (*iter_norm_x) * absolute_intensity;
@@ -346,12 +320,8 @@ private:
         accumulated_pc_pub_->publish(accumulated_msg);
         if (sum_intensity > 1e-6) {
             publishCentroid(sum_x_intensity / sum_intensity, sum_y_intensity / sum_intensity, sum_z_intensity / sum_intensity, accumulated_msg.header.stamp);
-        } else if (accumulated_msg.width > 0) {
-             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 10000, "Cannot calculate centroid: intensity sum %.4e too small.", sum_intensity);
         }
     }
-
-    // --- PLY Saving Logic ---
 
     std::string getTimestampString() {
         auto now = std::chrono::system_clock::now();
@@ -362,9 +332,8 @@ private:
     }
 
     bool savePlyToFile(const std::string& filepath) {
-        RCLCPP_INFO(this->get_logger(), "Attempting to save PLY to: '%s'", filepath.c_str());
         if (filepath.empty()) {
-            RCLCPP_ERROR(this->get_logger(), "Provided filepath is empty.");
+            RCLCPP_ERROR(this->get_logger(), "Provided filepath for PLY is empty.");
             return false;
         }
 
@@ -382,17 +351,17 @@ private:
             for (const auto& pair : voxel_map_) {
                 const PointData& p_data = pair.second;
                 if (std::isnan(p_data.x) || std::isnan(p_data.y) || std::isnan(p_data.z) || std::isnan(p_data.intensity)) {
-                    continue; // Skip NaN points
+                    continue;
                 }
                 pcl::PointXYZI point;
                 point.x = p_data.x; point.y = p_data.y; point.z = p_data.z;
-                point.intensity = p_data.intensity; // Absolute intensity
+                point.intensity = p_data.intensity;
                 cloud->points.push_back(point);
             }
         }
 
         if (cloud->points.empty()) {
-             RCLCPP_ERROR(this->get_logger(), "Failed to create PCL cloud (0 valid points found). PLY not saved.");
+             RCLCPP_ERROR(this->get_logger(), "Failed to create PCL cloud (0 valid points found).");
             return false;
         }
 
@@ -404,7 +373,6 @@ private:
             std::filesystem::path p(filepath);
             if (p.has_parent_path()) {
                 if (!std::filesystem::exists(p.parent_path())) {
-                     RCLCPP_INFO(this->get_logger(), "Creating directory: %s", p.parent_path().string().c_str());
                      std::filesystem::create_directories(p.parent_path());
                 }
             }
@@ -422,20 +390,15 @@ private:
         }
     }
 
-    void savePlyCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    void savePlyCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request>,
                          std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
-        (void)request;
         std::filesystem::path dir_path(save_ply_directory_);
         std::filesystem::path base_path(save_ply_base_name_ + ".ply");
         std::string full_path = (dir_path / base_path).string();
 
-        RCLCPP_INFO(this->get_logger(), "Manual Save PLY service triggered.");
-        bool success = savePlyToFile(full_path);
-
-        response->success = success;
-        response->message = success ? "PLY file saved successfully to " + full_path
-                                     : "Failed to save PLY file to " + full_path;
+        response->success = savePlyToFile(full_path);
+        response->message = response->success ? "PLY file saved to " + full_path : "Failed to save PLY file.";
     }
 
     void onShutdownCallback() {
@@ -444,15 +407,8 @@ private:
          std::filesystem::path dir_path(save_ply_directory_);
          std::filesystem::path file_path(save_ply_base_name_ + "_" + timestamp + ".ply");
          std::string full_path = (dir_path / file_path).string();
-         bool success = savePlyToFile(full_path);
-         if (success) {
-             RCLCPP_INFO(this->get_logger(), "Shutdown save successful.");
-         } else {
-             RCLCPP_ERROR(this->get_logger(), "Shutdown save failed.");
-         }
+         savePlyToFile(full_path);
     }
-
-    // --- Helper functions ---
 
     void publishEmptyCloud(){
         sensor_msgs::msg::PointCloud2 empty_msg;
@@ -486,7 +442,6 @@ private:
         source_pub_->publish(std::move(source_msg));
     }
 
-    // --- Member Variables ---
     std::string radiation_topic_, lidar_topic_, output_topic_, source_estimate_topic_;
     std::string sensor_frame_, map_frame_;
     double attenuation_mu_, min_cpm_, ray_max_distance_, min_intensity_publish_;
@@ -505,7 +460,6 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_separate_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub_separate_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_ply_service_;
-    // No need to store the shutdown handler if rclcpp::on_shutdown returns void
 
     double latest_cpm_ = 0.0;
     double global_max_absolute_intensity_ = 0.0;
@@ -513,9 +467,8 @@ private:
     std::mutex voxel_map_mutex_;
     std::unordered_map<VoxelIndex, PointData, VoxelIndexHash> voxel_map_;
 
-}; // End class RadiationPointcloudNode
+};
 
-// --- Main Function ---
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
@@ -524,6 +477,6 @@ int main(int argc, char **argv)
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(node);
     executor.spin();
-    rclcpp::shutdown(); // Triggers registered on_shutdown callbacks
+    rclcpp::shutdown();
     return 0;
 }

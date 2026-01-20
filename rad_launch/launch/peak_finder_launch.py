@@ -9,15 +9,6 @@ def generate_launch_description():
     # Path to your parameter file
     param_file = os.path.join(pkg_share, 'params', 'heatmap.yaml')
 
-    # The Python node that provides the GP services (prediction and peak finding)
-    gp_service_node = Node(
-        package='ros2_rad_map',
-        executable='gp_predictor_node.py',
-        name='gp_predictor_node',
-        output='screen',
-        parameters=[param_file]
-    )
-
     # The C++ node that calls the peak finding service
     peak_finder_client_node = Node(
         package='ros2_rad_map',
@@ -28,6 +19,5 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        gp_service_node,
         peak_finder_client_node
     ])

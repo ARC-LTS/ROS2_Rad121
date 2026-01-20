@@ -12,14 +12,6 @@ def generate_launch_description():
     # Parameter file for the new zone planner node
     planner_param_file = os.path.join(pkg_share, 'params', 'zone_planner.yaml')
 
-    # The GP prediction server
-    gp_prediction_server_node = Node(
-        package='ros2_rad_map',
-        executable='gp_predictor_node.py',
-        name='gp_predictor_node',
-        output='screen'
-    )
-
     # The C++ node that generates the heatmaps
     rad_heatmap_node = Node(
         package='ros2_rad_map',
@@ -47,7 +39,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        gp_prediction_server_node,
         rad_heatmap_node,
         rad_zone_planner_node,
         peak_finder_client_node
