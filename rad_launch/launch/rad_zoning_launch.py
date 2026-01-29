@@ -12,15 +12,6 @@ def generate_launch_description():
     # Parameter file for the new zone planner node
     planner_param_file = os.path.join(pkg_share, 'params', 'zone_planner.yaml')
 
-    # The C++ node that generates the heatmaps
-    rad_heatmap_node = Node(
-        package='ros2_rad_map',
-        executable='rad_heatmap_node',
-        name='rad_heatmap_node',
-        parameters=[heatmap_param_file],
-        output='screen'
-    )
-
     # The new C++ node that finds and visualizes zones
     rad_zone_planner_node = Node(
         package='ros2_rad_map',
@@ -39,7 +30,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        rad_heatmap_node,
         rad_zone_planner_node,
         peak_finder_client_node
     ])

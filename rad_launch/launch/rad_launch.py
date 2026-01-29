@@ -34,9 +34,16 @@ def generate_launch_description():
         )
     )
 
+    rad_zoning_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(rad_launch_share, 'launch', 'rad_zoning_launch.py')
+        )
+    )
+
     # --- Return the master launch description ---
     return LaunchDescription([
         simulation_launch,
         gp_predictor_launch,
         rad_heatmap_launch,
+        rad_zoning_launch,
     ])
