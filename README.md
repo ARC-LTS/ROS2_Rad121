@@ -9,4 +9,4 @@ This package does the following:
 ## What can I do with this data? 
 Anything, really. 
 
-This was to demonstrate pull requests to Carlos
+This was to demonstrate pull requests to Carlos. This was also to demonstrate how it works in VS Code. 
