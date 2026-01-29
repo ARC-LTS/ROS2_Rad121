@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ROS2 Integrated Geiger Counter
 ## What is this?
 This package is part of a project developing long-term surveillance drones for nuclear site monitoring. One of the sensors onboard the robots is a small-form factor and low-cost Geiger-Muller (GM) counter connected to the embedded computer of the robot. 
@@ -10,3 +11,6 @@ This package does the following:
 Anything, really. 
 
 This was to demonstrate pull requests to Carlos. This was also to demonstrate how it works in VS Code. 
+=======
+TODO: Readme
+>>>>>>> 3d191cd (TODO: Readme)
