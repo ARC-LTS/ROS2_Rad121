@@ -14,6 +14,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 
 add_executable(rad_field_server src/rad_field_server.cpp)
 ament_target_dependencies(rad_field_server
@@ -23,6 +24,7 @@ ament_target_dependencies(rad_field_server
   visualization_msgs
   tf2_ros
   tf2_geometry_msgs
+  nav_msgs
 )
 
 add_executable(rad_sensor_simulator src/rad_sensor_simulator.cpp)

@@ -25,6 +25,7 @@ public:
         this->declare_parameter<int>("noise_removal_iterations", 2);
         this->declare_parameter<int>("background_dilation_iterations", 3);
         this->declare_parameter<int>("peak_seed_radius_px", 5);
+        this->declare_parameter<double>("safety_threshold_mrem_hr", 5.0);
 
         auto heatmap_topic = this->get_parameter("heatmap_topic").as_string();
         auto map_topic = this->get_parameter("map_topic").as_string();
@@ -36,6 +37,7 @@ public:
         noise_removal_iterations_ = this->get_parameter("noise_removal_iterations").as_int();
         background_dilation_iterations_ = this->get_parameter("background_dilation_iterations").as_int();
         peak_seed_radius_px_ = this->get_parameter("peak_seed_radius_px").as_int();
+        safety_threshold_mrem_hr_ = this->get_parameter("safety_threshold_mrem_hr").as_double();
         
         rclcpp::QoS map_qos(rclcpp::KeepLast(1));
         map_qos.transient_local().reliable();
@@ -47,6 +49,7 @@ public:
             std::bind(&RadZonePlannerNode::peakCallback, this, std::placeholders::_1));
 
         zone_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/radiation_zone_markers", 10);
+        costmap_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/radiation_aware_costmap", map_qos);
 
         RCLCPP_INFO(this->get_logger(), "Radiation Zone Planner has started.");
     }
@@ -55,6 +58,7 @@ private:
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
+        latest_map_ = msg;
         map_info_ = msg->info;
         if (!map_info_received_) {
             map_info_received_ = true;
@@ -72,9 +76,13 @@ private:
 
     void heatmapCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
-        std::unique_lock<std::mutex> lock(map_mutex_, std::try_to_lock);
-        if (!lock.owns_lock() || !map_info_received_) {
-            return;
+        nav_msgs::msg::OccupancyGrid::SharedPtr map_to_modify;
+        {
+            std::unique_lock<std::mutex> lock(map_mutex_, std::try_to_lock);
+            if (!lock.owns_lock() || !map_info_received_ || !latest_map_) {
+                return;
+            }
+            map_to_modify = std::make_shared<nav_msgs::msg::OccupancyGrid>(*latest_map_);
         }
 
         cv_bridge::CvImagePtr cv_ptr;
@@ -84,6 +92,25 @@ private:
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
             return;
         }
+
+        cv::Mat heatmap_raw = cv_ptr->image;
+        if (heatmap_raw.rows == static_cast<int>(map_to_modify->info.height) && heatmap_raw.cols == static_cast<int>(map_to_modify->info.width)) {
+            for (int r = 0; r < heatmap_raw.rows; ++r) {
+                for (int c = 0; c < heatmap_raw.cols; ++c) {
+                    if (heatmap_raw.at<float>(r, c) > safety_threshold_mrem_hr_) {
+                        unsigned int index = r * map_to_modify->info.width + c;
+                        if (index < map_to_modify->data.size()) {
+                            map_to_modify->data[index] = 100; // LETHAL_OBSTACLE
+                        }
+                    }
+                }
+            }
+        } else {
+            RCLCPP_WARN(this->get_logger(), "Heatmap dimensions (%d, %d) do not match map dimensions (%d, %d). Cannot generate radiation costmap.",
+                heatmap_raw.cols, heatmap_raw.rows, map_to_modify->info.width, map_to_modify->info.height);
+        }
+        map_to_modify->header.stamp = this->get_clock()->now();
+        costmap_pub_->publish(*map_to_modify);
         
         cv::Mat flipped_heatmap;
         cv::flip(cv_ptr->image, flipped_heatmap, 0);
@@ -189,6 +216,7 @@ private:
     std::mutex map_mutex_;
     std::mutex peak_mutex_;
     nav_msgs::msg::MapMetaData map_info_;
+    nav_msgs::msg::OccupancyGrid::SharedPtr latest_map_;
     bool map_info_received_{false};
     double radiation_threshold_;
     double min_zone_area_;
@@ -199,11 +227,13 @@ private:
     int noise_removal_iterations_;
     int background_dilation_iterations_;
     int peak_seed_radius_px_;
+    double safety_threshold_mrem_hr_;
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;
     rclcpp::Subscription<ros2_rad_map::msg::RadZoneArray>::SharedPtr peak_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr zone_marker_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
 };
 
 int main(int argc, char *argv[])

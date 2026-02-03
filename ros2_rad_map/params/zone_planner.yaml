@@ -6,6 +6,7 @@ rad_zone_planner_node:
     radiation_threshold: 0.5 
     min_zone_area: 50.0
     map_frame: "map"
+    safety_threshold_mrem_hr: 5.0
     
     # Watershed hypertuning parameters
     noise_removal_kernel_size: 3

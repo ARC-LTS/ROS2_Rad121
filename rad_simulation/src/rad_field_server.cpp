@@ -5,11 +5,13 @@
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 
 #include <vector>
 #include <random>
 #include <string>
 #include <memory>
+#include <mutex>
 
 // Struct to hold information about a single radiation source
 struct RadSource
@@ -34,13 +36,21 @@ public:
         // Declare parameters
         this->declare_parameter<std::string>("map_frame", "map");
         this->declare_parameter<std::string>("robot_frame", "base_link");
+        this->declare_parameter<int>("num_random_sources_to_spawn", 3);
+
         map_frame_ = this->get_parameter("map_frame").as_string();
         robot_frame_ = this->get_parameter("robot_frame").as_string();
+        num_random_sources_ = this->get_parameter("num_random_sources_to_spawn").as_int();
 
-        // Create the service to spawn a new source
+        // Create the service to spawn a new source at robot's pose
         spawn_service_ = this->create_service<std_srvs::srv::Trigger>(
             "~/spawn_source",
             std::bind(&RadFieldServer::spawn_source_callback, this, std::placeholders::_1, std::placeholders::_2));
+        
+        // Create the service to spawn random sources on the map
+        spawn_random_service_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/spawn_random_sources",
+            std::bind(&RadFieldServer::spawn_random_sources_callback, this, std::placeholders::_1, std::placeholders::_2));
 
         // Create the publisher for visualization markers
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/sources", 10);
@@ -49,13 +59,28 @@ public:
         marker_timer_ = this->create_wall_timer(
             std::chrono::seconds(1),
             std::bind(&RadFieldServer::publish_markers, this));
+        
+        // Subscribe to the map
+        rclcpp::QoS map_qos(rclcpp::KeepLast(1));
+        map_qos.transient_local().reliable();
+        map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+            "/map", map_qos, std::bind(&RadFieldServer::map_callback, this, std::placeholders::_1));
 
         RCLCPP_INFO(this->get_logger(), "Radiation Field Server has started.");
-        RCLCPP_INFO(this->get_logger(), "Call service '%s' to spawn a source.", spawn_service_->get_service_name());
+        RCLCPP_INFO(this->get_logger(), "Call service '%s' to spawn a source at robot.", spawn_service_->get_service_name());
+        RCLCPP_INFO(this->get_logger(), "Call service '%s' to spawn random sources on map.", spawn_random_service_->get_service_name());
         RCLCPP_INFO(this->get_logger(), "Publishing source markers to '%s'.", marker_pub_->get_topic_name());
     }
 
 private:
+    void map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+    {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        current_map_ = *msg;
+        map_received_ = true;
+        RCLCPP_INFO_ONCE(this->get_logger(), "Map received. Ready to spawn random sources.");
+    }
+
     void spawn_source_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                                std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
@@ -92,6 +117,69 @@ private:
 
         response->success = true;
         response->message = "Radiation source spawned successfully.";
+    }
+
+    void spawn_random_sources_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                       std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        (void)request; // Unused
+
+        if (!map_received_) {
+            response->success = false;
+            response->message = "Map not received yet. Cannot spawn random sources.";
+            RCLCPP_WARN(this->get_logger(), "%s", response->message.c_str());
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        unsigned int map_width = current_map_.info.width;
+        unsigned int map_height = current_map_.info.height;
+        double map_res = current_map_.info.resolution;
+        double map_origin_x = current_map_.info.origin.position.x;
+        double map_origin_y = current_map_.info.origin.position.y;
+
+        std::uniform_int_distribution<unsigned int> x_dist(0, map_width - 1);
+        std::uniform_int_distribution<unsigned int> y_dist(0, map_height - 1);
+
+        int spawned_count = 0;
+        for (int i = 0; i < num_random_sources_; ++i) {
+            unsigned int rand_mx, rand_my;
+            int attempts = 0;
+            const int max_attempts = 100;
+
+            do {
+                rand_mx = x_dist(rng_);
+                rand_my = y_dist(rng_);
+                attempts++;
+            } while (current_map_.data[rand_my * map_width + rand_mx] != 0 && attempts < max_attempts);
+
+            if (attempts == max_attempts) {
+                RCLCPP_WARN(this->get_logger(), "Failed to find free space for random source after %d attempts. Skipping source.", max_attempts);
+                continue;
+            }
+
+            RadSource new_source;
+            new_source.id = next_source_id_++;
+            new_source.position.x = map_origin_x + (rand_mx + 0.5) * map_res;
+            new_source.position.y = map_origin_y + (rand_my + 0.5) * map_res;
+            new_source.position.z = 0.0; // Assume 2D plane
+            new_source.intensity = dist_(rng_); // Random intensity
+
+            sources_.push_back(new_source);
+            spawned_count++;
+
+            RCLCPP_INFO(this->get_logger(), "Spawned random source %d at (%.2f, %.2f) with intensity %.2f mrem/hr.",
+                        new_source.id, new_source.position.x, new_source.position.y, new_source.intensity);
+        }
+
+        if (spawned_count > 0) {
+            publish_markers();
+            response->success = true;
+            response->message = "Successfully spawned " + std::to_string(spawned_count) + " random radiation sources.";
+        } else {
+            response->success = false;
+            response->message = "No random sources were spawned.";
+        }
     }
 
     void publish_markers()
@@ -141,8 +229,11 @@ private:
 
     // ROS Comms
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr spawn_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr spawn_random_service_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::TimerBase::SharedPtr marker_timer_;
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+
 
     // TF
     tf2_ros::Buffer tf_buffer_;
@@ -153,10 +244,16 @@ private:
     // State
     std::vector<RadSource> sources_;
     int next_source_id_;
+    nav_msgs::msg::OccupancyGrid current_map_;
+    bool map_received_;
+    int num_random_sources_;
 
     // Random number generation
     std::mt19937 rng_;
     std::uniform_real_distribution<double> dist_;
+    
+    // Mutex for map access
+    std::mutex map_mutex_;
 };
 
 int main(int argc, char **argv)
