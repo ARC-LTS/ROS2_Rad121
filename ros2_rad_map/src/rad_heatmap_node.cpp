@@ -64,6 +64,7 @@ public:
         historical_heatmap_pub_ = it.advertise("/rad_heatmap/historical_mean", 1);
         historical_std_dev_pub_ = it.advertise("/rad_heatmap/historical_std_dev", 1);
         raw_mean_map_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
+        gp_mean_map_pub_ = it.advertise("/rad_heatmap/gp_mean_map", 1);
 
         gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
 
@@ -105,6 +106,7 @@ private:
     image_transport::Publisher historical_heatmap_pub_;
     image_transport::Publisher historical_std_dev_pub_;
     image_transport::Publisher raw_mean_map_pub_;
+    image_transport::Publisher gp_mean_map_pub_;
     rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
 
     tf2_ros::Buffer tf_buffer_;
@@ -300,6 +302,14 @@ private:
                 {
                     hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_mean[i];
                     hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_std_dev[i];
+                }
+
+                // Publish the raw GP mean map before occlusion
+                std_msgs::msg::Header h;
+                h.stamp = this->now();
+                h.frame_id = map_frame_;
+                if (!hist_mean_raw.empty()) {
+                    gp_mean_map_pub_.publish(*cv_bridge::CvImage(h, "32FC1", hist_mean_raw).toImageMsg());
                 }
 
                 cv::Mat hist_mean_occluded = applyOcclusionFloodFill(hist_mean_raw, hist_samples_copy, map_copy, raycasting_map_copy);

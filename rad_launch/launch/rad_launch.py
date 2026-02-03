@@ -34,15 +34,22 @@ def generate_launch_description():
         )
     )
 
-    rad_zoning_launch = IncludeLaunchDescription(
+    rad_local_recovery_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(rad_launch_share, 'launch', 'rad_zoning_launch.py')
+            os.path.join(rad_launch_share, 'launch', 'rad_local_recovery_launch.py')
         )
     )
 
-    rad_safety_launch = IncludeLaunchDescription(
+    rad_costmap_visualizer_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(rad_launch_share, 'launch', 'rad_safety_launch.py')
+            os.path.join(rad_launch_share, 'launch', 'rad_costmap_visualizer_launch.py')
+        )
+    )
+
+    spot_robot_share = get_package_share_directory('spot_robot')
+    rad_nav2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(spot_robot_share, 'launch', 'nav2.launch.py')
         )
     )
 
@@ -51,6 +58,7 @@ def generate_launch_description():
         simulation_launch,
         gp_predictor_launch,
         rad_heatmap_launch,
-        rad_zoning_launch,
-        rad_safety_launch,
+        rad_local_recovery_launch,
+        rad_costmap_visualizer_launch,
+        rad_nav2_launch,
     ])

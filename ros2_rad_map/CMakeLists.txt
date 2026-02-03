@@ -92,19 +92,6 @@ ament_target_dependencies(rad_mapper_node
   visualization_msgs
 )
 
-add_executable(rad_zone_planner_node src/rad_zone_planner_node.cpp)
-ament_target_dependencies(rad_zone_planner_node
-  rclcpp
-  cv_bridge
-  sensor_msgs
-  nav_msgs
-  visualization_msgs
-)
-target_link_libraries(rad_zone_planner_node
-  ${OpenCV_LIBRARIES}
-  ${PROJECT_NAME}__rosidl_typesupport_cpp
-)
-
 add_executable(peak_finder_client_node src/peak_finder_client_node.cpp)
 ament_target_dependencies(peak_finder_client_node
   rclcpp
@@ -129,13 +116,22 @@ target_link_libraries(gp_visualizer_node
   ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
+add_executable(rad_costmap_visualizer_node src/rad_costmap_visualizer_node.cpp)
+ament_target_dependencies(rad_costmap_visualizer_node
+  rclcpp
+  cv_bridge
+  sensor_msgs
+  nav_msgs
+  visualization_msgs
+)
+
 install(TARGETS
   rad_heatmap_node
   rad_mapper_node
   rad_pointcloud_node
-  rad_zone_planner_node
   peak_finder_client_node
   gp_visualizer_node
+  rad_costmap_visualizer_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS

@@ -61,11 +61,12 @@ void RadiationLayer::updateBounds(
     return;
   }
 
-  // Update the entire map area
-  *min_x = layered_costmap_->getCostmap()->getOriginX();
-  *min_y = layered_costmap_->getCostmap()->getOriginY();
-  *max_x = *min_x + layered_costmap_->getCostmap()->getSizeInMetersX();
-  *max_y = *min_y + layered_costmap_->getCostmap()->getSizeInMetersY();
+  // When a new heatmap is received, we need to update the whole costmap.
+  // We expand the update bounds to include the entire costmap area.
+  *min_x = std::min(*min_x, layered_costmap_->getCostmap()->getOriginX());
+  *min_y = std::min(*min_y, layered_costmap_->getCostmap()->getOriginY());
+  *max_x = std::max(*max_x, layered_costmap_->getCostmap()->getOriginX() + layered_costmap_->getCostmap()->getSizeInMetersX());
+  *max_y = std::max(*max_y, layered_costmap_->getCostmap()->getOriginY() + layered_costmap_->getCostmap()->getSizeInMetersY());
 }
 
 void RadiationLayer::updateCosts(

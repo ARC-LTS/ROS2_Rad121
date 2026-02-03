@@ -38,3 +38,10 @@ peak_finder_client_node:
     marker_color_r: [1.0, 0.0, 0.0, 1.0]
     matching_threshold_m: 1.5
     min_peak_mrem_hr: 0.1
+
+rad_costmap_visualizer_node:
+  ros__parameters:
+    heatmap_topic: "/rad_heatmap/raw_mean_map"
+    map_topic: "/map"
+    warning_threshold_mrem_hr: 2.0
+    evacuation_threshold_mrem_hr: 10.0
