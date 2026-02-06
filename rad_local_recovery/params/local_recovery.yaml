@@ -1,8 +1,8 @@
 local_recovery_node:
   ros__parameters:
-    critical_dose_mrem_hr: 10.0
-    safe_dose_threshold_mrem_hr: 1.0
-    recovery_search_distance_m: 5.0
+    critical_dose_mrem_hr: 2.0
+    safe_dose_threshold_mrem_hr: 0.25
+    recovery_search_distance_m: 8.0
     robot_base_frame: "base_link"
     map_frame: "map"
     fallback_retreat_distance_m: 1.5

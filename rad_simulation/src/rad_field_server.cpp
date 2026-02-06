@@ -6,6 +6,7 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
+#include "std_msgs/msg/float64.hpp"
 
 #include <vector>
 #include <random>
@@ -21,6 +22,11 @@ struct RadSource
     double intensity; // mrem/hr
 };
 
+#include "rad_simulation/srv/set_float64.hpp"
+#include "rad_simulation/srv/add_source.hpp"
+#include "std_srvs/srv/set_bool.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
+
 class RadFieldServer : public rclcpp::Node
 {
 public:
@@ -31,16 +37,23 @@ public:
 
         // Initialize random number generation
         rng_.seed(std::random_device()());
-        dist_ = std::uniform_real_distribution<double>(2.5, 10.0);
 
         // Declare parameters
         this->declare_parameter<std::string>("map_frame", "map");
         this->declare_parameter<std::string>("robot_frame", "base_link");
-        this->declare_parameter<int>("num_random_sources_to_spawn", 3);
+        this->declare_parameter<bool>("enable_sources", true);
+        this->declare_parameter<std::vector<double>>("known_sources", std::vector<double>{});
+        this->declare_parameter<int>("num_unknown_sources", 3);
+        this->declare_parameter<int>("num_high_intensity_sources", 1);
+        this->declare_parameter<double>("high_intensity_threshold", 10.0);
+        this->declare_parameter<double>("low_intensity_min", 2.5);
+        this->declare_parameter<double>("low_intensity_max", 5.0);
+        this->declare_parameter<bool>("background_radiation_enabled", false);
+        this->declare_parameter<double>("background_radiation_min", 0.0);
+        this->declare_parameter<double>("background_radiation_max", 1.0);
 
         map_frame_ = this->get_parameter("map_frame").as_string();
         robot_frame_ = this->get_parameter("robot_frame").as_string();
-        num_random_sources_ = this->get_parameter("num_random_sources_to_spawn").as_int();
 
         // Create the service to spawn a new source at robot's pose
         spawn_service_ = this->create_service<std_srvs::srv::Trigger>(
@@ -52,13 +65,75 @@ public:
             "~/spawn_random_sources",
             std::bind(&RadFieldServer::spawn_random_sources_callback, this, std::placeholders::_1, std::placeholders::_2));
 
+        // New services for real-time control
+        enable_sources_service_ = this->create_service<std_srvs::srv::SetBool>(
+            "~/enable_sources",
+            [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+                   std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+                this->set_parameter(rclcpp::Parameter("enable_sources", request->data));
+                response->success = true;
+                response->message = request->data ? "Sources enabled" : "Sources disabled";
+                RCLCPP_INFO(this->get_logger(), "Real-time control: %s", response->message.c_str());
+            });
+
+        enable_background_service_ = this->create_service<std_srvs::srv::SetBool>(
+            "~/enable_background",
+            [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+                   std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+                this->set_parameter(rclcpp::Parameter("background_radiation_enabled", request->data));
+                response->success = true;
+                response->message = request->data ? "Background enabled" : "Background disabled";
+                RCLCPP_INFO(this->get_logger(), "Real-time control: %s", response->message.c_str());
+            });
+
+        set_background_level_service_ = this->create_service<rad_simulation::srv::SetFloat64>(
+            "~/set_background_level",
+            [this](const std::shared_ptr<rad_simulation::srv::SetFloat64::Request> request,
+                   std::shared_ptr<rad_simulation::srv::SetFloat64::Response> response) {
+                this->set_parameter(rclcpp::Parameter("background_radiation_min", request->data));
+                this->set_parameter(rclcpp::Parameter("background_radiation_max", request->data));
+                response->success = true;
+                response->message = "Fixed background level set to " + std::to_string(request->data);
+                RCLCPP_INFO(this->get_logger(), "Real-time control: %s", response->message.c_str());
+            });
+
+        add_source_service_ = this->create_service<rad_simulation::srv::AddSource>(
+            "~/add_source",
+            [this](const std::shared_ptr<rad_simulation::srv::AddSource::Request> request,
+                   std::shared_ptr<rad_simulation::srv::AddSource::Response> response) {
+                RadSource source;
+                source.id = next_source_id_++;
+                source.position = request->position;
+                source.intensity = request->intensity;
+                sources_.push_back(source);
+                response->success = true;
+                response->message = "Source added successfully";
+                RCLCPP_INFO(this->get_logger(), "Real-time control: Added source at (%.2f, %.2f) with intensity %.2f. Total sources: %zu",
+                            source.position.x, source.position.y, source.intensity, sources_.size());
+                publish_markers();
+            });
+
+        clear_sources_service_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/clear_sources",
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                   std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+                sources_.clear();
+                response->success = true;
+                response->message = "All sources cleared";
+                RCLCPP_INFO(this->get_logger(), "Real-time control: %s", response->message.c_str());
+                publish_markers();
+            });
+
         // Create the publisher for visualization markers
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/sources", 10);
+        
+        // Create the publisher for background radiation level
+        background_pub_ = this->create_publisher<std_msgs::msg::Float64>("~/background_radiation", 10);
 
-        // Create a timer to periodically publish markers
-        marker_timer_ = this->create_wall_timer(
+        // Create a timer to periodically publish markers and background radiation
+        update_timer_ = this->create_wall_timer(
             std::chrono::seconds(1),
-            std::bind(&RadFieldServer::publish_markers, this));
+            std::bind(&RadFieldServer::update_callback, this));
         
         // Subscribe to the map
         rclcpp::QoS map_qos(rclcpp::KeepLast(1));
@@ -66,19 +141,106 @@ public:
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
             "/map", map_qos, std::bind(&RadFieldServer::map_callback, this, std::placeholders::_1));
 
+        // Setup parameter callback
+        param_callback_handle_ = this->add_on_set_parameters_callback(
+            std::bind(&RadFieldServer::on_set_parameters, this, std::placeholders::_1));
+
         RCLCPP_INFO(this->get_logger(), "Radiation Field Server has started.");
-        RCLCPP_INFO(this->get_logger(), "Call service '%s' to spawn a source at robot.", spawn_service_->get_service_name());
-        RCLCPP_INFO(this->get_logger(), "Call service '%s' to spawn random sources on map.", spawn_random_service_->get_service_name());
-        RCLCPP_INFO(this->get_logger(), "Publishing source markers to '%s'.", marker_pub_->get_topic_name());
     }
 
 private:
+    void update_callback()
+    {
+        publish_markers();
+        publish_background();
+    }
+
     void map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
         current_map_ = *msg;
+        bool first_time = !map_received_;
         map_received_ = true;
-        RCLCPP_INFO_ONCE(this->get_logger(), "Map received. Ready to spawn random sources.");
+        
+        if (first_time) {
+            RCLCPP_INFO(this->get_logger(), "Map received. Spawning initial sources.");
+            spawn_initial_sources();
+        }
+    }
+
+    void spawn_initial_sources()
+    {
+        // 1. Spawn known sources from parameters
+        std::vector<double> known_sources = this->get_parameter("known_sources").as_double_array();
+        for (size_t i = 0; i + 2 < known_sources.size(); i += 3) {
+            RadSource source;
+            source.id = next_source_id_++;
+            source.position.x = known_sources[i];
+            source.position.y = known_sources[i+1];
+            source.position.z = 0.0;
+            source.intensity = known_sources[i+2];
+            sources_.push_back(source);
+            RCLCPP_INFO(this->get_logger(), "Spawned known source %d at (%.2f, %.2f) with intensity %.2f mrem/hr.",
+                        source.id, source.position.x, source.position.y, source.intensity);
+        }
+
+        // 2. Spawn random sources
+        int num_unknown = this->get_parameter("num_unknown_sources").as_int();
+        int num_high = this->get_parameter("num_high_intensity_sources").as_int();
+        spawn_random_sources(num_unknown, num_high);
+    }
+
+    void spawn_random_sources(int num_unknown, int num_high)
+    {
+        if (!map_received_) return;
+
+        unsigned int map_width = current_map_.info.width;
+        unsigned int map_height = current_map_.info.height;
+        double map_res = current_map_.info.resolution;
+        double map_origin_x = current_map_.info.origin.position.x;
+        double map_origin_y = current_map_.info.origin.position.y;
+
+        std::uniform_int_distribution<unsigned int> x_dist(0, map_width - 1);
+        std::uniform_int_distribution<unsigned int> y_dist(0, map_height - 1);
+        
+        double low_min = this->get_parameter("low_intensity_min").as_double();
+        double low_max = this->get_parameter("low_intensity_max").as_double();
+        double high_threshold = this->get_parameter("high_intensity_threshold").as_double();
+        
+        std::uniform_real_distribution<double> low_intensity_dist(low_min, low_max);
+        std::uniform_real_distribution<double> high_intensity_dist(high_threshold, high_threshold * 2.0);
+
+        for (int i = 0; i < num_unknown; ++i) {
+            unsigned int rand_mx, rand_my;
+            int attempts = 0;
+            const int max_attempts = 100;
+
+            do {
+                rand_mx = x_dist(rng_);
+                rand_my = y_dist(rng_);
+                attempts++;
+            } while (current_map_.data[rand_my * map_width + rand_mx] != 0 && attempts < max_attempts);
+
+            if (attempts == max_attempts) continue;
+
+            RadSource new_source;
+            new_source.id = next_source_id_++;
+            new_source.position.x = map_origin_x + (rand_mx + 0.5) * map_res;
+            new_source.position.y = map_origin_y + (rand_my + 0.5) * map_res;
+            new_source.position.z = 0.0;
+            
+            if (i < num_high) {
+                new_source.intensity = high_intensity_dist(rng_);
+                RCLCPP_INFO(this->get_logger(), "Spawned high-intensity unknown source %d at (%.2f, %.2f) with intensity %.2f mrem/hr.",
+                            new_source.id, new_source.position.x, new_source.position.y, new_source.intensity);
+            } else {
+                new_source.intensity = low_intensity_dist(rng_);
+                RCLCPP_INFO(this->get_logger(), "Spawned unknown source %d at (%.2f, %.2f) with intensity %.2f mrem/hr.",
+                            new_source.id, new_source.position.x, new_source.position.y, new_source.intensity);
+            }
+
+            sources_.push_back(new_source);
+        }
     }
 
     void spawn_source_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
@@ -105,14 +267,15 @@ private:
         new_source.position.x = t.transform.translation.x;
         new_source.position.y = t.transform.translation.y;
         new_source.position.z = t.transform.translation.z;
-        new_source.intensity = dist_(rng_); // Random intensity
+        
+        std::uniform_real_distribution<double> dist(2.5, 10.0);
+        new_source.intensity = dist(rng_);
 
         sources_.push_back(new_source);
 
         RCLCPP_INFO(this->get_logger(), "Spawned source %d at (%.2f, %.2f, %.2f) with intensity %.2f mrem/hr.",
                     new_source.id, new_source.position.x, new_source.position.y, new_source.position.z, new_source.intensity);
 
-        // Immediately publish markers after adding a new one
         publish_markers();
 
         response->success = true;
@@ -123,63 +286,16 @@ private:
                                        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
         (void)request; // Unused
-
         if (!map_received_) {
             response->success = false;
-            response->message = "Map not received yet. Cannot spawn random sources.";
-            RCLCPP_WARN(this->get_logger(), "%s", response->message.c_str());
+            response->message = "Map not received yet.";
             return;
         }
-
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        unsigned int map_width = current_map_.info.width;
-        unsigned int map_height = current_map_.info.height;
-        double map_res = current_map_.info.resolution;
-        double map_origin_x = current_map_.info.origin.position.x;
-        double map_origin_y = current_map_.info.origin.position.y;
-
-        std::uniform_int_distribution<unsigned int> x_dist(0, map_width - 1);
-        std::uniform_int_distribution<unsigned int> y_dist(0, map_height - 1);
-
-        int spawned_count = 0;
-        for (int i = 0; i < num_random_sources_; ++i) {
-            unsigned int rand_mx, rand_my;
-            int attempts = 0;
-            const int max_attempts = 100;
-
-            do {
-                rand_mx = x_dist(rng_);
-                rand_my = y_dist(rng_);
-                attempts++;
-            } while (current_map_.data[rand_my * map_width + rand_mx] != 0 && attempts < max_attempts);
-
-            if (attempts == max_attempts) {
-                RCLCPP_WARN(this->get_logger(), "Failed to find free space for random source after %d attempts. Skipping source.", max_attempts);
-                continue;
-            }
-
-            RadSource new_source;
-            new_source.id = next_source_id_++;
-            new_source.position.x = map_origin_x + (rand_mx + 0.5) * map_res;
-            new_source.position.y = map_origin_y + (rand_my + 0.5) * map_res;
-            new_source.position.z = 0.0; // Assume 2D plane
-            new_source.intensity = dist_(rng_); // Random intensity
-
-            sources_.push_back(new_source);
-            spawned_count++;
-
-            RCLCPP_INFO(this->get_logger(), "Spawned random source %d at (%.2f, %.2f) with intensity %.2f mrem/hr.",
-                        new_source.id, new_source.position.x, new_source.position.y, new_source.intensity);
-        }
-
-        if (spawned_count > 0) {
-            publish_markers();
-            response->success = true;
-            response->message = "Successfully spawned " + std::to_string(spawned_count) + " random radiation sources.";
-        } else {
-            response->success = false;
-            response->message = "No random sources were spawned.";
-        }
+        int num_unknown = this->get_parameter("num_unknown_sources").as_int();
+        int num_high = this->get_parameter("num_high_intensity_sources").as_int();
+        spawn_random_sources(num_unknown, num_high);
+        response->success = true;
+        response->message = "Successfully spawned random sources.";
     }
 
     void publish_markers()
@@ -187,7 +303,6 @@ private:
         visualization_msgs::msg::MarkerArray marker_array;
         auto now = this->get_clock()->now();
 
-        // Add a DELETEALL marker to clear previous markers
         visualization_msgs::msg::Marker clear_marker;
         clear_marker.header.frame_id = map_frame_;
         clear_marker.header.stamp = now;
@@ -196,44 +311,86 @@ private:
         clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
         marker_array.markers.push_back(clear_marker);
 
-        // Create a new marker for each source
-        for (const auto &source : sources_)
-        {
-            visualization_msgs::msg::Marker marker;
-            marker.header.frame_id = map_frame_;
-            marker.header.stamp = now;
-            marker.ns = "rad_sources";
-            marker.id = source.id + 1; // ID 0 is reserved for DELETEALL
-            marker.type = visualization_msgs::msg::Marker::SPHERE;
-            marker.action = visualization_msgs::msg::Marker::ADD;
-            marker.pose.position = source.position;
-            marker.pose.orientation.w = 1.0;
+        if (this->get_parameter("enable_sources").as_bool()) {
+            for (const auto &source : sources_)
+            {
+                visualization_msgs::msg::Marker marker;
+                marker.header.frame_id = map_frame_;
+                marker.header.stamp = now;
+                marker.ns = "rad_sources";
+                marker.id = source.id + 1;
+                marker.type = visualization_msgs::msg::Marker::SPHERE;
+                marker.action = visualization_msgs::msg::Marker::ADD;
+                marker.pose.position = source.position;
+                marker.pose.orientation.w = 1.0;
 
-            // Scale and color based on intensity (2.5 -> 10.0)
-            double normalized_intensity = (source.intensity - 2.5) / (10.0 - 2.5);
-            marker.scale.x = 0.2 + normalized_intensity * 0.8; // Scale from 0.2m to 1.0m
-            marker.scale.y = 0.2 + normalized_intensity * 0.8;
-            marker.scale.z = 0.2 + normalized_intensity * 0.8;
-            
-            // Color from green (low) to red (high)
-            marker.color.a = 0.8; // Alpha
-            marker.color.r = static_cast<float>(normalized_intensity);
-            marker.color.g = static_cast<float>(1.0 - normalized_intensity);
-            marker.color.b = 0.0;
+                double high_thresh = this->get_parameter("high_intensity_threshold").as_double();
+                double low_min = this->get_parameter("low_intensity_min").as_double();
+                double normalized_intensity = (source.intensity - low_min) / (high_thresh - low_min);
+                normalized_intensity = std::max(0.0, std::min(1.0, normalized_intensity));
 
-            marker_array.markers.push_back(marker);
+                marker.scale.x = 0.2 + normalized_intensity * 0.8;
+                marker.scale.y = 0.2 + normalized_intensity * 0.8;
+                marker.scale.z = 0.2 + normalized_intensity * 0.8;
+                
+                marker.color.a = 0.8;
+                marker.color.r = static_cast<float>(normalized_intensity);
+                marker.color.g = static_cast<float>(1.0 - normalized_intensity);
+                marker.color.b = 0.0;
+
+                marker_array.markers.push_back(marker);
+            }
         }
 
         marker_pub_->publish(marker_array);
     }
 
+    void publish_background()
+    {
+        std_msgs::msg::Float64 msg;
+        if (this->get_parameter("background_radiation_enabled").as_bool()) {
+            double bg_min = this->get_parameter("background_radiation_min").as_double();
+            double bg_max = this->get_parameter("background_radiation_max").as_double();
+            
+            if (bg_max <= bg_min) {
+                msg.data = bg_min;
+            } else {
+                std::uniform_real_distribution<double> background_dist(bg_min, bg_max);
+                msg.data = background_dist(rng_);
+            }
+        } else {
+            msg.data = 0.0;
+        }
+        background_pub_->publish(msg);
+    }
+
+    rcl_interfaces::msg::SetParametersResult on_set_parameters(const std::vector<rclcpp::Parameter> &parameters)
+    {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto &param : parameters) {
+            if (param.get_name() == "known_sources" || param.get_name() == "num_unknown_sources") {
+                // We don't re-spawn everything on parameter change to avoid duplicates,
+                // but one could implement a reset logic here.
+                RCLCPP_INFO(this->get_logger(), "Parameter %s changed. Note: Sources already spawned are not affected.", param.get_name().c_str());
+            }
+        }
+        return result;
+    }
+
     // ROS Comms
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr spawn_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr spawn_random_service_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_sources_service_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_background_service_;
+    rclcpp::Service<rad_simulation::srv::SetFloat64>::SharedPtr set_background_level_service_;
+    rclcpp::Service<rad_simulation::srv::AddSource>::SharedPtr add_source_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_sources_service_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
-    rclcpp::TimerBase::SharedPtr marker_timer_;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr background_pub_;
+    rclcpp::TimerBase::SharedPtr update_timer_;
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
-
+    rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
     // TF
     tf2_ros::Buffer tf_buffer_;
@@ -245,12 +402,10 @@ private:
     std::vector<RadSource> sources_;
     int next_source_id_;
     nav_msgs::msg::OccupancyGrid current_map_;
-    bool map_received_;
-    int num_random_sources_;
+    bool map_received_ = false;
 
     // Random number generation
     std::mt19937 rng_;
-    std::uniform_real_distribution<double> dist_;
     
     // Mutex for map access
     std::mutex map_mutex_;

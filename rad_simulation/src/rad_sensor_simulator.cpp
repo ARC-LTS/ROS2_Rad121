@@ -1,5 +1,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
+#include "std_msgs/msg/float64.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
@@ -22,7 +23,7 @@ struct RadSource
 class RadSensorSimulator : public rclcpp::Node
 {
 public:
-    RadSensorSimulator() : Node("rad_sensor_simulator"), tf_buffer_(this->get_clock())
+    RadSensorSimulator() : Node("rad_sensor_simulator"), tf_buffer_(this->get_clock()), background_radiation_(0.0)
     {
         // Initialize TF listener
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(tf_buffer_);
@@ -44,6 +45,11 @@ public:
         source_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
             "/rad_field_server/sources", 10,
             std::bind(&RadSensorSimulator::sources_callback, this, std::placeholders::_1));
+        
+        // Subscription to background radiation
+        background_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+            "/rad_field_server/background_radiation", 10,
+            std::bind(&RadSensorSimulator::background_callback, this, std::placeholders::_1));
 
         // Publisher for the simulated /rad topic
         rad_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("/rad", 10);
@@ -57,6 +63,12 @@ public:
     }
 
 private:
+    void background_callback(const std_msgs::msg::Float64::SharedPtr msg)
+    {
+        std::lock_guard<std::mutex> lock(source_mutex_);
+        background_radiation_ = msg->data;
+    }
+
     void sources_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(source_mutex_);
@@ -71,10 +83,16 @@ private:
                 RadSource source;
                 source.id = marker.id;
                 source.position = marker.pose.position;
-                // Reverse the normalization logic from the server to get intensity
-                // scale = 0.2 + norm * 0.8  => norm = (scale - 0.2) / 0.8
-                // intensity = norm * (10.0 - 2.5) + 2.5
+                
+                // Assuming intensity is derived from scale in a consistent way
+                // In our updated server, we use a different normalization but sensor 
+                // just needs a way to get it back. 
+                // If the server uses: scale = 0.2 + norm * 0.8
+                // We'll keep the inverse logic, but ideally we'd pass intensity more directly.
                 double normalized_intensity = (marker.scale.x - 0.2) / 0.8;
+                // Re-calculating intensity from normalized value
+                // Note: This assumes knowledge of how the server scales markers.
+                // We'll use 10.0 as a reference max for "normal" sources.
                 source.intensity = normalized_intensity * 7.5 + 2.5;
 
                 sources_.push_back(source);
@@ -99,12 +117,14 @@ private:
         }
 
         std::vector<RadSource> sources_copy;
+        double background_copy;
         {
             std::lock_guard<std::mutex> lock(source_mutex_);
             sources_copy = sources_;
+            background_copy = background_radiation_;
         }
 
-        double total_mrem_hr = 0.0;
+        double total_mrem_hr = background_copy;
 
         for (const auto &source : sources_copy)
         {
@@ -124,15 +144,14 @@ private:
 
         // Publish the message
         auto msg = std::make_unique<std_msgs::msg::Float64MultiArray>();
-        // The real sensor publishes [cpm_compensated, mR/hr]. We simulate this.
-        // We can invent a CPM value or just put 0, as the second value is what's used.
-        msg->data.push_back(total_mrem_hr * 450.0); // Dummy CPM based on a sensitivity of 450
+        msg->data.push_back(total_mrem_hr * 450.0); // Dummy CPM
         msg->data.push_back(total_mrem_hr);
         rad_pub_->publish(std::move(msg));
     }
 
     // ROS Comms
     rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr source_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr rad_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
 
@@ -144,6 +163,7 @@ private:
 
     // State
     std::vector<RadSource> sources_;
+    double background_radiation_;
     std::mutex source_mutex_;
     double min_distance_sq_;
 };

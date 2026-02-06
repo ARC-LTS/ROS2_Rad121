@@ -19,6 +19,7 @@ class GPPredictor(Node):
         self.declare_parameter('kernel.lengthscale', 5.0)
         self.declare_parameter('sensor_frame', 'base_link')
         self.declare_parameter('map_frame', 'map')
+        self.declare_parameter('sparse_threshold', 300) # Points before switching to Sparse GP
 
         self.predict_srv = self.create_service(GPPredict, 'predict_gp', self.predict_callback)
         self.peaks_srv = self.create_service(FindPeaks, 'find_rad_peaks', self.find_peaks_callback)
@@ -27,6 +28,8 @@ class GPPredictor(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.historical_samples = []
+        self.last_sample_pos = None
+        self.gp_model = None
         self.data_lock = threading.Lock()
 
         self.rad_sub = self.create_subscription(
@@ -36,7 +39,7 @@ class GPPredictor(Node):
             10
         )
         
-        self.get_logger().info('GP Predictor Node has started. Services "predict_gp" and "find_rad_peaks" are ready.')
+        self.get_logger().info('GP Predictor Node optimized. Using persistent models and Sparse GPs.')
 
     def rad_callback(self, msg):
         if len(msg.data) < 2:
@@ -53,31 +56,54 @@ class GPPredictor(Node):
             rad_value = msg.data[1]
 
             with self.data_lock:
+                # Spatial downsampling
+                if self.last_sample_pos is not None:
+                    dist_sq = (x - self.last_sample_pos[0])**2 + (y - self.last_sample_pos[1])**2
+                    if dist_sq < 0.04: # 0.2m move required
+                        return
+
                 self.historical_samples.append({'x': x, 'y': y, 'value': rad_value})
+                self.last_sample_pos = (x, y)
+                
+                # Cap the buffer
+                if len(self.historical_samples) > 1000:
+                    self.historical_samples.pop(0)
 
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-            self.get_logger().warn(f'TF Error in rad_callback: {e}')
+            pass
 
     def _build_gp_model(self, observed_x, observed_y, observed_vals_mean):
+        # Optimization: Use internal buffer if request is empty
         if len(observed_x) == 0:
-            self.get_logger().warn("No observed data provided, cannot train model.")
-            return None, None
+            with self.data_lock:
+                samples = list(self.historical_samples)
+            if not samples:
+                return None, None
+            observed_x = np.array([s['x'] for s in samples])
+            observed_y = np.array([s['y'] for s in samples])
+            observed_vals_mean = np.array([s['value'] for s in samples])
 
         training_points = np.vstack((observed_x, observed_y)).T
         training_values = observed_vals_mean[:, None]
 
+        num_points = training_points.shape[0]
+        sparse_thresh = self.get_parameter('sparse_threshold').get_parameter_value().integer_value
+        
         kernel_type = self.get_parameter('kernel.type').get_parameter_value().string_value
         lengthscale = self.get_parameter('kernel.lengthscale').get_parameter_value().double_value
-        
-        if training_values.ndim == 1:
-            training_values = training_values[:, None]
 
         if kernel_type.lower() == 'matern52':
             kernel = GPy.kern.Matern52(input_dim=2, variance=1., lengthscale=lengthscale)
         else:
             kernel = GPy.kern.RBF(input_dim=2, variance=1., lengthscale=lengthscale)
+
+        if num_points > sparse_thresh:
+            # Use Sparse GP for O(NM^2) instead of O(N^3)
+            num_inducing = 50 # Constant complexity now
+            gp_model = GPy.models.SparseGPRegression(training_points, training_values, kernel, num_inducing=num_inducing)
+        else:
+            gp_model = GPy.models.GPRegression(training_points, training_values, kernel)
         
-        gp_model = GPy.models.GPRegression(training_points, training_values, kernel)
         return gp_model, training_points
 
     def find_peaks_callback(self, request, response):

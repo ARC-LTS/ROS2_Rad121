@@ -15,6 +15,13 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/SetFloat64.srv"
+  "srv/AddSource.srv"
+  DEPENDENCIES geometry_msgs
+)
 
 add_executable(rad_field_server src/rad_field_server.cpp)
 ament_target_dependencies(rad_field_server
@@ -25,7 +32,20 @@ ament_target_dependencies(rad_field_server
   tf2_ros
   tf2_geometry_msgs
   nav_msgs
+  std_msgs
 )
+rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
+target_link_libraries(rad_field_server "${cpp_typesupport_target}")
+
+find_package(yaml-cpp REQUIRED)
+
+add_executable(source_selector_node src/source_selector_node.cpp)
+ament_target_dependencies(source_selector_node
+  rclcpp
+  geometry_msgs
+  std_srvs
+)
+target_link_libraries(source_selector_node yaml-cpp "${cpp_typesupport_target}")
 
 add_executable(rad_sensor_simulator src/rad_sensor_simulator.cpp)
 ament_target_dependencies(rad_sensor_simulator
@@ -39,6 +59,7 @@ ament_target_dependencies(rad_sensor_simulator
 install(TARGETS
   rad_field_server
   rad_sensor_simulator
+  source_selector_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

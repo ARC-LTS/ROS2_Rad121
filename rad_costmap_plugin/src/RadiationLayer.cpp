@@ -8,7 +8,7 @@ namespace rad_costmap_plugin
 {
 
 RadiationLayer::RadiationLayer()
-: new_heatmap_received_(false)
+: new_heatmap_received_(false), map_received_(false)
 {
 }
 
@@ -20,25 +20,34 @@ void RadiationLayer::onInitialize()
   }
 
   declareParameter("heatmap_topic", rclcpp::ParameterValue("/rad_heatmap/raw_mean_map"));
-  declareParameter("warning_threshold_mrem_hr", rclcpp::ParameterValue(2.0));
-  declareParameter("evacuation_threshold_mrem_hr", rclcpp::ParameterValue(10.0));
+  declareParameter("background_threshold_mrem_hr", rclcpp::ParameterValue(0.25));
+  declareParameter("critical_dose_mrem_hr", rclcpp::ParameterValue(2.0));
   
   node->get_parameter(name_ + "." + "heatmap_topic", heatmap_topic_);
-  node->get_parameter(name_ + "." + "warning_threshold_mrem_hr", warning_threshold_);
-  node->get_parameter(name_ + "." + "evacuation_threshold_mrem_hr", evacuation_threshold_);
+  node->get_parameter(name_ + "." + "background_threshold_mrem_hr", warning_threshold_);
+  node->get_parameter(name_ + "." + "critical_dose_mrem_hr", evacuation_threshold_);
 
-  RCLCPP_INFO(node->get_logger(), "Subscribing to heatmap topic: %s", heatmap_topic_.c_str());
-  RCLCPP_INFO(node->get_logger(), "Warning threshold: %.2f, Evacuation threshold: %.2f", warning_threshold_, evacuation_threshold_);
+  RCLCPP_INFO(node->get_logger(), "Radiation Layer: Subscribing to heatmap topic: %s", heatmap_topic_.c_str());
 
   rclcpp::QoS heatmap_qos(rclcpp::KeepLast(1));
   heatmap_sub_ = node->create_subscription<sensor_msgs::msg::Image>(
     heatmap_topic_, heatmap_qos,
     std::bind(&RadiationLayer::heatmapCallback, this, std::placeholders::_1));
   
+  map_sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    "/map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+    std::bind(&RadiationLayer::mapCallback, this, std::placeholders::_1));
+  
   // Set this layer as current
   current_ = true;
-  // Set the layer as enabled by default
   enabled_ = true;
+}
+
+void RadiationLayer::mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(map_mutex_);
+  map_info_ = msg->info;
+  map_received_ = true;
 }
 
 void RadiationLayer::heatmapCallback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -57,12 +66,11 @@ void RadiationLayer::updateBounds(
   double /*robot_x*/, double /*robot_y*/, double /*robot_yaw*/,
   double * min_x, double * min_y, double * max_x, double * max_y)
 {
-  if (!new_heatmap_received_) {
+  if (latest_heatmap_.empty()) {
     return;
   }
 
-  // When a new heatmap is received, we need to update the whole costmap.
-  // We expand the update bounds to include the entire costmap area.
+  // Force update of the entire costmap area to ensure radiation costs are persistent
   *min_x = std::min(*min_x, layered_costmap_->getCostmap()->getOriginX());
   *min_y = std::min(*min_y, layered_costmap_->getCostmap()->getOriginY());
   *max_x = std::max(*max_x, layered_costmap_->getCostmap()->getOriginX() + layered_costmap_->getCostmap()->getSizeInMetersX());
@@ -73,35 +81,42 @@ void RadiationLayer::updateCosts(
   nav2_costmap_2d::Costmap2D & master_grid,
   int min_i, int min_j, int max_i, int max_j)
 {
-  if (!enabled_ || !new_heatmap_received_) {
+  if (!enabled_) {
     return;
   }
 
-  std::lock_guard<std::mutex> lock(heatmap_mutex_);
-  if (latest_heatmap_.empty()) {
+  std::lock_guard<std::mutex> lock_heatmap(heatmap_mutex_);
+  std::lock_guard<std::mutex> lock_map(map_mutex_);
+
+  if (latest_heatmap_.empty() || !map_received_) {
     return;
   }
 
   unsigned char* master_array = master_grid.getCharMap();
-  unsigned int size_x = master_grid.getSizeInCellsX(), size_y = master_grid.getSizeInCellsY();
-
-  if (latest_heatmap_.rows != static_cast<int>(size_y) || latest_heatmap_.cols != static_cast<int>(size_x)) {
-    RCLCPP_WARN_ONCE(
-      node_.lock()->get_logger(),
-      "Radiation heatmap dimensions (%dx%d) do not match the costmap dimensions (%dx%d). Cannot apply radiation costs.",
-      latest_heatmap_.cols, latest_heatmap_.rows, size_x, size_y);
-    return;
-  }
+  double res = master_grid.getResolution();
+  double origin_x = master_grid.getOriginX();
+  double origin_y = master_grid.getOriginY();
 
   for (int j = min_j; j < max_j; j++) {
     for (int i = min_i; i < max_i; i++) {
-      float radiation = latest_heatmap_.at<float>(j, i);
+      // 1. Get world coordinates of the current costmap cell
+      double wx = origin_x + (i + 0.5) * res;
+      double wy = origin_y + (j + 0.5) * res;
+
+      // 2. Transform world coordinate to heatmap pixel coordinate
+      int h_x = static_cast<int>((wx - map_info_.origin.position.x) / map_info_.resolution);
+      int h_y = static_cast<int>((wy - map_info_.origin.position.y) / map_info_.resolution);
+
+      if (h_x < 0 || h_x >= latest_heatmap_.cols || h_y < 0 || h_y >= latest_heatmap_.rows) {
+        continue;
+      }
+
+      float radiation = latest_heatmap_.at<float>(h_y, h_x);
 
       if (radiation > warning_threshold_) {
         int index = master_grid.getIndex(i, j);
         unsigned char current_cost = master_array[index];
 
-        // Do not overwrite lethal obstacles
         if (current_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
           continue;
         }
@@ -110,16 +125,14 @@ void RadiationLayer::updateCosts(
         if (radiation >= evacuation_threshold_) {
           radiation_cost = nav2_costmap_2d::LETHAL_OBSTACLE;
         } else {
-          // Linearly scale cost from 1 up to INSCRIBED_INFLATED_OBSTACLE - 1
           double scale = (radiation - warning_threshold_) / (evacuation_threshold_ - warning_threshold_);
-          radiation_cost = 1 + scale * (nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 2);
+          radiation_cost = 1 + static_cast<unsigned char>(scale * (nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 2));
         }
         
         master_array[index] = std::max(current_cost, radiation_cost);
       }
     }
   }
-  new_heatmap_received_ = false; // Reset flag after updating costs
 }
 
 void RadiationLayer::reset()

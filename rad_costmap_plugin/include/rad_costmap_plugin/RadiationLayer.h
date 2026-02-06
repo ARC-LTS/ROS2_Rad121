@@ -29,6 +29,7 @@ public:
 
 private:
   void heatmapCallback(const sensor_msgs::msg::Image::SharedPtr msg);
+  void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
 
   std::string heatmap_topic_;
   double warning_threshold_;
@@ -36,8 +37,12 @@ private:
   bool new_heatmap_received_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   cv::Mat latest_heatmap_;
+  nav_msgs::msg::MapMetaData map_info_;
+  bool map_received_;
   std::mutex heatmap_mutex_;
+  std::mutex map_mutex_;
 };
 
 }  // namespace rad_costmap_plugin

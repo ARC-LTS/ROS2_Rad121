@@ -173,8 +173,13 @@ private:
         
         int search_radius_px = recovery_search_distance_ / res;
 
+        float min_rad_found = std::numeric_limits<float>::max();
+        geometry_msgs::msg::Point safest_point_candidate;
+        bool safest_candidate_set = false;
+
+        // Search in expanding circles
         for (int r = 1; r < search_radius_px; ++r) {
-            for (int i = 0; i < 360; i += 15) { // Search in a circle
+            for (int i = 0; i < 360; i += 10) { // Increased angular resolution for safer escape
                 double angle = i * M_PI / 180.0;
                 int px = robot_px + r * cos(angle);
                 int py = robot_py + r * sin(angle);
@@ -183,14 +188,30 @@ private:
 
                 int map_idx = py * width + px;
                 if (map->data[map_idx] == 0) { // Free space
-                    if (cv_ptr->image.at<float>(py, px) < safe_dose_threshold_) {
-                        safe_point.x = origin_x + (px + 0.5) * res;
-                        safe_point.y = origin_y + (py + 0.5) * res;
-                        safe_point.z = 0; // Assuming 2D
+                    float current_rad = cv_ptr->image.at<float>(py, px);
+                    
+                    if (current_rad < min_rad_found) {
+                        min_rad_found = current_rad;
+                        safest_point_candidate.x = origin_x + (px + 0.5) * res;
+                        safest_point_candidate.y = origin_y + (py + 0.5) * res;
+                        safest_point_candidate.z = 0;
+                        safest_candidate_set = true;
+                    }
+
+                    // If we find a point that is genuinely below the safe threshold, return it immediately
+                    if (current_rad < safe_dose_threshold_) {
+                        safe_point = safest_point_candidate;
+                        RCLCPP_INFO(this->get_logger(), "Found safe point below threshold (%.2f mrem/hr).", current_rad);
                         return true;
                     }
                 }
             }
+        }
+
+        if (safest_candidate_set) {
+            safe_point = safest_point_candidate;
+            RCLCPP_WARN(this->get_logger(), "No point below threshold found. Using safest available point (%.2f mrem/hr).", min_rad_found);
+            return true;
         }
 
         return false;
