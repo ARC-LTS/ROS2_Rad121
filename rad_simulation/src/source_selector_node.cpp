@@ -1,6 +1,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
-#include "rad_simulation/srv/add_source.hpp"
+#include "rad_simulation/srv/spawn_source.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include <yaml-cpp/yaml.h>
 #include <fstream>
@@ -34,7 +34,7 @@ public:
         clear_service_ = this->create_service<std_srvs::srv::Trigger>(
             "~/clear_sources", std::bind(&SourceSelectorNode::clearCallback, this, std::placeholders::_1, std::placeholders::_2));
 
-        add_source_client_ = this->create_client<rad_simulation::srv::AddSource>("/rad_field_server/add_source");
+        spawn_source_client_ = this->create_client<rad_simulation::srv::SpawnSource>("/rad_field_server/spawn_source");
 
         RCLCPP_INFO(this->get_logger(), "Source Selector Node started. Use 'Publish Point' in RViz2 to define sources.");
         RCLCPP_INFO(this->get_logger(), "Sources will be saved to: %s", output_file_.c_str());
@@ -56,13 +56,14 @@ private:
         RCLCPP_INFO(this->get_logger(), "Received point from RViz: (%.2f, %.2f)", s.x, s.y);
 
         // Try to push to simulation in real-time
-        if (add_source_client_->service_is_ready()) {
-            auto request = std::make_shared<rad_simulation::srv::AddSource::Request>();
-            request->position = msg->point;
+        if (spawn_source_client_->service_is_ready()) {
+            auto request = std::make_shared<rad_simulation::srv::SpawnSource::Request>();
+            request->x = s.x;
+            request->y = s.y;
             request->intensity = s.intensity;
             
-            add_source_client_->async_send_request(request, 
-                [this](rclcpp::Client<rad_simulation::srv::AddSource>::SharedFuture future) {
+            spawn_source_client_->async_send_request(request, 
+                [this](rclcpp::Client<rad_simulation::srv::SpawnSource>::SharedFuture future) {
                     auto response = future.get();
                     if (response->success) {
                         RCLCPP_INFO(this->get_logger(), "Successfully pushed source to simulation: %s", response->message.c_str());
@@ -121,7 +122,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_service_;
-    rclcpp::Client<rad_simulation::srv::AddSource>::SharedPtr add_source_client_;
+    rclcpp::Client<rad_simulation::srv::SpawnSource>::SharedPtr spawn_source_client_;
 
     std::vector<SourceDef> sources_;
     std::mutex mutex_;

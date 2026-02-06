@@ -123,7 +123,7 @@ void RadiationLayer::updateCosts(
 
         unsigned char radiation_cost = 0;
         if (radiation >= evacuation_threshold_) {
-          radiation_cost = nav2_costmap_2d::LETHAL_OBSTACLE;
+          radiation_cost = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
         } else {
           double scale = (radiation - warning_threshold_) / (evacuation_threshold_ - warning_threshold_);
           radiation_cost = 1 + static_cast<unsigned char>(scale * (nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 2));

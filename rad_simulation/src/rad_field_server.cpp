@@ -22,8 +22,9 @@ struct RadSource
     double intensity; // mrem/hr
 };
 
+#include "rad_simulation/srv/spawn_source.hpp"
+#include "rad_simulation/srv/spawn_random_sources.hpp"
 #include "rad_simulation/srv/set_float64.hpp"
-#include "rad_simulation/srv/add_source.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 
@@ -55,15 +56,20 @@ public:
         map_frame_ = this->get_parameter("map_frame").as_string();
         robot_frame_ = this->get_parameter("robot_frame").as_string();
 
-        // Create the service to spawn a new source at robot's pose
-        spawn_service_ = this->create_service<std_srvs::srv::Trigger>(
+        // Create the service to spawn a new source at specific coordinates
+        spawn_service_ = this->create_service<rad_simulation::srv::SpawnSource>(
             "~/spawn_source",
             std::bind(&RadFieldServer::spawn_source_callback, this, std::placeholders::_1, std::placeholders::_2));
         
         // Create the service to spawn random sources on the map
-        spawn_random_service_ = this->create_service<std_srvs::srv::Trigger>(
+        spawn_random_service_ = this->create_service<rad_simulation::srv::SpawnRandomSources>(
             "~/spawn_random_sources",
             std::bind(&RadFieldServer::spawn_random_sources_callback, this, std::placeholders::_1, std::placeholders::_2));
+
+        // Create the service to spawn a new source at robot's pose
+        spawn_at_robot_service_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/spawn_at_robot",
+            std::bind(&RadFieldServer::spawn_at_robot_callback, this, std::placeholders::_1, std::placeholders::_2));
 
         // New services for real-time control
         enable_sources_service_ = this->create_service<std_srvs::srv::SetBool>(
@@ -95,22 +101,6 @@ public:
                 response->success = true;
                 response->message = "Fixed background level set to " + std::to_string(request->data);
                 RCLCPP_INFO(this->get_logger(), "Real-time control: %s", response->message.c_str());
-            });
-
-        add_source_service_ = this->create_service<rad_simulation::srv::AddSource>(
-            "~/add_source",
-            [this](const std::shared_ptr<rad_simulation::srv::AddSource::Request> request,
-                   std::shared_ptr<rad_simulation::srv::AddSource::Response> response) {
-                RadSource source;
-                source.id = next_source_id_++;
-                source.position = request->position;
-                source.intensity = request->intensity;
-                sources_.push_back(source);
-                response->success = true;
-                response->message = "Source added successfully";
-                RCLCPP_INFO(this->get_logger(), "Real-time control: Added source at (%.2f, %.2f) with intensity %.2f. Total sources: %zu",
-                            source.position.x, source.position.y, source.intensity, sources_.size());
-                publish_markers();
             });
 
         clear_sources_service_ = this->create_service<std_srvs::srv::Trigger>(
@@ -243,8 +233,43 @@ private:
         }
     }
 
-    void spawn_source_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                               std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    void spawn_source_callback(const std::shared_ptr<rad_simulation::srv::SpawnSource::Request> request,
+                               std::shared_ptr<rad_simulation::srv::SpawnSource::Response> response)
+    {
+        RadSource new_source;
+        new_source.id = next_source_id_++;
+        new_source.position.x = request->x;
+        new_source.position.y = request->y;
+        new_source.position.z = 0.0;
+        new_source.intensity = request->intensity;
+
+        sources_.push_back(new_source);
+
+        RCLCPP_INFO(this->get_logger(), "Spawned source %d at (%.2f, %.2f) with intensity %.2f mrem/hr.",
+                    new_source.id, new_source.position.x, new_source.position.y, new_source.intensity);
+
+        publish_markers();
+
+        response->success = true;
+        response->message = "Radiation source spawned successfully.";
+    }
+
+    void spawn_random_sources_callback(const std::shared_ptr<rad_simulation::srv::SpawnRandomSources::Request> request,
+                                       std::shared_ptr<rad_simulation::srv::SpawnRandomSources::Response> response)
+    {
+        if (!map_received_) {
+            response->success = false;
+            response->message = "Map not received yet.";
+            return;
+        }
+        int num_high = this->get_parameter("num_high_intensity_sources").as_int();
+        spawn_random_sources(request->num_sources, num_high);
+        response->success = true;
+        response->message = "Successfully spawned " + std::to_string(request->num_sources) + " random sources.";
+    }
+
+    void spawn_at_robot_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                 std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
         (void)request; // Unused
 
@@ -273,29 +298,13 @@ private:
 
         sources_.push_back(new_source);
 
-        RCLCPP_INFO(this->get_logger(), "Spawned source %d at (%.2f, %.2f, %.2f) with intensity %.2f mrem/hr.",
+        RCLCPP_INFO(this->get_logger(), "Spawned source %d at robot pose (%.2f, %.2f, %.2f) with intensity %.2f mrem/hr.",
                     new_source.id, new_source.position.x, new_source.position.y, new_source.position.z, new_source.intensity);
 
         publish_markers();
 
         response->success = true;
-        response->message = "Radiation source spawned successfully.";
-    }
-
-    void spawn_random_sources_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                                       std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-    {
-        (void)request; // Unused
-        if (!map_received_) {
-            response->success = false;
-            response->message = "Map not received yet.";
-            return;
-        }
-        int num_unknown = this->get_parameter("num_unknown_sources").as_int();
-        int num_high = this->get_parameter("num_high_intensity_sources").as_int();
-        spawn_random_sources(num_unknown, num_high);
-        response->success = true;
-        response->message = "Successfully spawned random sources.";
+        response->message = "Radiation source spawned at robot pose successfully.";
     }
 
     void publish_markers()
@@ -379,12 +388,12 @@ private:
     }
 
     // ROS Comms
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr spawn_service_;
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr spawn_random_service_;
+    rclcpp::Service<rad_simulation::srv::SpawnSource>::SharedPtr spawn_service_;
+    rclcpp::Service<rad_simulation::srv::SpawnRandomSources>::SharedPtr spawn_random_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr spawn_at_robot_service_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_sources_service_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_background_service_;
     rclcpp::Service<rad_simulation::srv::SetFloat64>::SharedPtr set_background_level_service_;
-    rclcpp::Service<rad_simulation::srv::AddSource>::SharedPtr add_source_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_sources_service_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr background_pub_;
