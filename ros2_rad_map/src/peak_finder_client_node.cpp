@@ -11,7 +11,7 @@
 #include <mutex>
 #include <iomanip>
 #include <cmath>
-#include <algorithm>
+#include "std_msgs/msg/float64.hpp"
 
 std_msgs::msg::ColorRGBA valueToColor(double value, double min_val, double max_val) {
     std_msgs::msg::ColorRGBA color;
@@ -65,6 +65,12 @@ public:
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
             "/rad", 10, std::bind(&PeakFinderClientNode::radCallback, this, std::placeholders::_1));
 
+        background_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+            "/rad_field_server/background_radiation", 10,
+            [this](const std_msgs::msg::Float64::SharedPtr msg) {
+                this->current_background_level_ = msg->data;
+            });
+
         peak_finder_client_ = this->create_client<ros2_rad_map::srv::FindPeaks>("/find_rad_peaks");
 
         zone_waypoints_pub_ = this->create_publisher<ros2_rad_map::msg::RadZoneArray>("/radiation_zones", 10);
@@ -117,6 +123,7 @@ private:
         is_service_running_ = true;
         auto request = std::make_shared<ros2_rad_map::srv::FindPeaks::Request>();
         request->num_starts = num_starts_;
+        request->mean_value = current_background_level_;
 
         for (const auto &s : samples_copy) {
             request->observed_x.push_back(s.x);
@@ -246,6 +253,7 @@ private:
     bool is_service_running_ = false;
 
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
     rclcpp::Client<ros2_rad_map::srv::FindPeaks>::SharedPtr peak_finder_client_;
     rclcpp::Publisher<ros2_rad_map::msg::RadZoneArray>::SharedPtr zone_waypoints_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_array_pub_;
@@ -259,6 +267,7 @@ private:
     double marker_scale_;
     double matching_threshold_m_;
     double min_peak_mrem_hr_;
+    double current_background_level_{0.0};
 };
 
 int main(int argc, char *argv[])

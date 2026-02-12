@@ -10,7 +10,7 @@
 #include <vector>
 #include <mutex>
 #include <thread>
-#include <future>
+#include "std_msgs/msg/float64.hpp"
 
 struct RadSample {
     double x, y, value;
@@ -67,6 +67,12 @@ public:
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>("/map", map_qos, std::bind(&GPVisualizerNode::mapCallback, this, std::placeholders::_1));
         
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/rad", 10, std::bind(&GPVisualizerNode::radCallback, this, std::placeholders::_1));
+
+        background_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+            "/rad_field_server/background_radiation", 10,
+            [this](const std_msgs::msg::Float64::SharedPtr msg) {
+                this->current_background_level_ = msg->data;
+            });
 
         gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
 
@@ -141,6 +147,7 @@ private:
         }
 
         auto request = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
+        request->mean_value = current_background_level_;
         for (const auto &s : samples_copy) {
             request->observed_x.push_back(s.x);
             request->observed_y.push_back(s.y);
@@ -239,6 +246,7 @@ private:
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
     rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -248,6 +256,7 @@ private:
     
     std::string sensor_frame_, map_frame_;
     double cloud_resolution_;
+    double current_background_level_{0.0};
 };
 
 int main(int argc, char **argv)

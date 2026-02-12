@@ -6,10 +6,31 @@ import GPy
 from scipy.optimize import minimize
 from geometry_msgs.msg import Point
 from ros2_rad_map.srv import GPPredict, FindPeaks
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, Float64
 import threading
 import tf2_ros
 from tf2_geometry_msgs import PoseStamped
+import pickle
+import os
+
+class LowFiMapping(GPy.core.Mapping):
+    def __init__(self, low_fi_model, initial_rho=1.0):
+        super().__init__(input_dim=2, output_dim=1)
+        self.low_fi_model = low_fi_model
+        # Create rho as a GPy parameter so it can be optimized
+        self.rho = GPy.core.parameterization.Param('rho', initial_rho)
+        self.link_parameter(self.rho)
+
+    def f(self, X):
+        X = np.atleast_2d(X)
+        m, _ = self.low_fi_model.predict(X)
+        return self.rho * m
+
+    def update_gradients(self, dL_dF, X):
+        X = np.atleast_2d(X)
+        m, _ = self.low_fi_model.predict(X)
+        # dL/drho = sum( dL/df * df/drho ) = sum( dL/df * m )
+        self.rho.gradient = np.sum(dL_dF * m)
 
 class GPPredictor(Node):
     def __init__(self):
@@ -17,10 +38,15 @@ class GPPredictor(Node):
         
         self.declare_parameter('kernel.type', 'RBF')
         self.declare_parameter('kernel.lengthscale', 5.0)
+        self.declare_parameter('fix_lengthscale', False)
         self.declare_parameter('sensor_frame', 'base_link')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('sparse_threshold', 300) # Points before switching to Sparse GP
-
+        self.declare_parameter('use_multi_fidelity', True)
+        self.declare_parameter('model_path', '')
+        self.declare_parameter('initial_rho', 1.0)
+        self.declare_parameter('fix_rho', False)
+        
         self.predict_srv = self.create_service(GPPredict, 'predict_gp', self.predict_callback)
         self.peaks_srv = self.create_service(FindPeaks, 'find_rad_peaks', self.find_peaks_callback)
         
@@ -31,6 +57,11 @@ class GPPredictor(Node):
         self.last_sample_pos = None
         self.gp_model = None
         self.data_lock = threading.Lock()
+        self.current_background = 0.0
+        
+        # Multi-fidelity state
+        self.gp_lo = None
+        self.load_low_fi_model()
 
         self.rad_sub = self.create_subscription(
             Float64MultiArray,
@@ -38,8 +69,46 @@ class GPPredictor(Node):
             self.rad_callback,
             10
         )
+
+        self.background_sub = self.create_subscription(
+            Float64,
+            '/rad_field_server/background_radiation',
+            self.background_callback,
+            10
+        )
         
-        self.get_logger().info('GP Predictor Node optimized. Using persistent models and Sparse GPs.')
+        use_multi_fidelity = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
+        if use_multi_fidelity:
+            self.get_logger().info('GP Predictor Node initialized with Multi-Fidelity (ARGP) support.')
+        else:
+            self.get_logger().info('GP Predictor Node initialized without Multi-Fidelity (ARGP) support.')
+
+    def load_low_fi_model(self):
+        model_path = self.get_parameter('model_path').get_parameter_value().string_value
+        if not model_path or not os.path.exists(model_path):
+            self.get_logger().warn(f"Model path '{model_path}' invalid or empty. Multi-fidelity disabled.")
+            return
+
+        try:
+            with open(model_path, 'rb') as f:
+                data = pickle.load(f)
+            
+            if isinstance(data, dict) and 'gp_lo' in data:
+                self.gp_lo = data['gp_lo']
+                self.get_logger().info(f"Loaded low-fidelity model from {model_path}")
+            else:
+                self.get_logger().error(f"Pickle at {model_path} does not contain 'gp_lo'.")
+        except Exception as e:
+            self.get_logger().error(f"Failed to load low-fi model: {e}")
+
+    def background_callback(self, msg):
+        # Handle both Float64 and Float64MultiArray (simulation might use MultiArray)
+        if hasattr(msg, 'data'):
+            if isinstance(msg.data, list) or isinstance(msg.data, np.ndarray):
+                if len(msg.data) > 0:
+                    self.current_background = msg.data[0]
+            else:
+                self.current_background = msg.data
 
     def rad_callback(self, msg):
         if len(msg.data) < 2:
@@ -72,7 +141,7 @@ class GPPredictor(Node):
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
             pass
 
-    def _build_gp_model(self, observed_x, observed_y, observed_vals_mean):
+    def _build_gp_model(self, observed_x, observed_y, observed_vals_mean, mean_value=None):
         # Optimization: Use internal buffer if request is empty
         if len(observed_x) == 0:
             with self.data_lock:
@@ -82,6 +151,8 @@ class GPPredictor(Node):
             observed_x = np.array([s['x'] for s in samples])
             observed_y = np.array([s['y'] for s in samples])
             observed_vals_mean = np.array([s['value'] for s in samples])
+            if mean_value is None:
+                mean_value = self.current_background
 
         training_points = np.vstack((observed_x, observed_y)).T
         training_values = observed_vals_mean[:, None]
@@ -94,16 +165,46 @@ class GPPredictor(Node):
 
         if kernel_type.lower() == 'matern52':
             kernel = GPy.kern.Matern52(input_dim=2, variance=1., lengthscale=lengthscale)
+        elif kernel_type.lower() == 'matern32':
+            kernel = GPy.kern.Matern32(input_dim=2, variance=1., lengthscale=lengthscale)
+        elif kernel_type.lower() == 'exponential' or kernel_type.lower() == 'matern12':
+            kernel = GPy.kern.Exponential(input_dim=2, variance=1., lengthscale=lengthscale)
         else:
             kernel = GPy.kern.RBF(input_dim=2, variance=1., lengthscale=lengthscale)
+
+        # Include a mean function
+        mf = None
+        use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
+        init_rho = self.get_parameter('initial_rho').get_parameter_value().double_value
+        
+        if use_mf and self.gp_lo is not None:
+            # Multi-fidelity mode: use low-fi model as mean with trainable rho
+            mf = LowFiMapping(self.gp_lo, initial_rho=init_rho)
+        elif mean_value is not None:
+            # Single-fidelity mode: use constant background mean
+            mf = GPy.mappings.Constant(input_dim=2, output_dim=1, value=mean_value)
 
         if num_points > sparse_thresh:
             # Use Sparse GP for O(NM^2) instead of O(N^3)
             num_inducing = 50 # Constant complexity now
-            gp_model = GPy.models.SparseGPRegression(training_points, training_values, kernel, num_inducing=num_inducing)
+            gp_model = GPy.models.SparseGPRegression(training_points, training_values, kernel, num_inducing=num_inducing, mean_function=mf, normalizer=False)
         else:
-            gp_model = GPy.models.GPRegression(training_points, training_values, kernel)
+            gp_model = GPy.models.GPRegression(training_points, training_values, kernel, mean_function=mf, normalizer=False)
         
+        # Apply Fixed Lengthscale if requested
+        if self.get_parameter('fix_lengthscale').get_parameter_value().bool_value:
+            gp_model.kern.lengthscale.fix()
+            self.get_logger().info(f"Fixed kernel lengthscale to {lengthscale}", throttle_duration_sec=60.0)
+
+        # Apply Fixed Rho / Mean if requested
+        if self.get_parameter('fix_rho').get_parameter_value().bool_value:
+            if use_mf and hasattr(gp_model.mean_function, 'rho'):
+                gp_model.mean_function.rho.fix()
+                self.get_logger().info(f"Fixed Multi-Fi scaling (rho) to {init_rho}", throttle_duration_sec=60.0)
+            elif not use_mf and hasattr(gp_model.mean_function, 'C'):
+                gp_model.mean_function.C.fix()
+                self.get_logger().info(f"Fixed Single-GP background mean to {mean_value}", throttle_duration_sec=60.0)
+
         return gp_model, training_points
 
     def find_peaks_callback(self, request, response):
@@ -114,28 +215,40 @@ class GPPredictor(Node):
         observed_y = np.array([s['y'] for s in samples])
         observed_vals_mean = np.array([s['value'] for s in samples])
 
-        gp_model, training_points = self._build_gp_model(observed_x, observed_y, observed_vals_mean)
-        if gp_model is None:
-            return response
+        gp_model, training_points = self._build_gp_model(observed_x, observed_y, observed_vals_mean, request.mean_value)
+        
+        target_model = None
+        search_bounds = None
+
+        if gp_model is not None:
+            target_model = gp_model
+            min_x, min_y = training_points.min(axis=0)
+            max_x, max_y = training_points.max(axis=0)
+            search_bounds = [(min_x, max_x), (min_y, max_y)]
+        else:
+            use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
+            if use_mf and self.gp_lo is not None:
+                target_model = self.gp_lo
+                # Use a default large bound for low-fi peak finding if no data
+                search_bounds = [(-50.0, 50.0), (-50.0, 50.0)] 
+            else:
+                return response
 
         def objective_function(x):
             x = np.atleast_2d(x)
-            mean, _ = gp_model.predict(x)
+            mean, _ = target_model.predict(x)
             return -mean[0, 0]
-
-        min_x, min_y = training_points.min(axis=0)
-        max_x, max_y = training_points.max(axis=0)
-        bounds = [(min_x, max_x), (min_y, max_y)]
 
         found_peaks = []
         for i in range(request.num_starts):
-            start_point = np.random.uniform(low=[min_x, min_y], high=[max_x, max_y])
+            start_point = np.random.uniform(low=[search_bounds[0][0], search_bounds[1][0]], 
+                                           high=[search_bounds[0][1], search_bounds[1][1]])
             
             result = minimize(
                 fun=objective_function,
                 x0=start_point,
                 method='L-BFGS-B',
-                bounds=bounds
+                bounds=search_bounds
             )
             
             if result.success:
@@ -167,20 +280,65 @@ class GPPredictor(Node):
             observed_y = np.array(request.observed_y)
             observed_vals_mean = np.array(request.observed_values_mean)
             
-            gp_model, _ = self._build_gp_model(observed_x, observed_y, observed_vals_mean)
-            if gp_model is None:
-                return response
-
+            gp_model, _ = self._build_gp_model(observed_x, observed_y, observed_vals_mean, request.mean_value)
+            
             points_to_predict = np.array([[p.x, p.y] for p in request.points_to_predict])
-
             if points_to_predict.shape[0] == 0:
                 return response
 
+            if gp_model is None:
+                # ... (keep existing low-fi fallback)
+                use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
+                if use_mf and self.gp_lo is not None:
+                    mean_prediction, var_prediction = self.gp_lo.predict(points_to_predict)
+                    std_dev_prediction = np.sqrt(var_prediction)
+                    response.predicted_mean = np.maximum(0, mean_prediction).flatten().tolist() 
+                    response.predicted_std_dev = np.maximum(0, std_dev_prediction).flatten().tolist()
+                return response
+
+            # 1. Optimize hyperparameters BEFORE prediction
+            try:
+                gp_model.optimize(messages=False, max_iters=50)
+            except Exception as opt_e:
+                self.get_logger().warn(f"Optimization failed: {opt_e}")
+
+            # 2. Perform Prediction
             mean_prediction, var_prediction = gp_model.predict(points_to_predict)
             std_dev_prediction = np.sqrt(var_prediction)
 
             response.predicted_mean = np.maximum(0, mean_prediction).flatten().tolist() 
             response.predicted_std_dev = np.maximum(0, std_dev_prediction).flatten().tolist()
+
+            # 3. Fill Diagnostics
+            try:
+                response.log_marginal_likelihood = float(gp_model.log_likelihood())
+                response.kernel_lengthscale = float(gp_model.kern.lengthscale[0])
+                response.kernel_variance = float(gp_model.kern.variance[0])
+                if hasattr(gp_model, 'likelihood'):
+                    response.noise_variance = float(gp_model.likelihood.variance[0])
+                
+                # Training MSE (Residual after GP fit)
+                mu_train, _ = gp_model.predict(gp_model.X)
+                response.training_mse = float(np.mean((mu_train - gp_model.Y)**2))
+                
+                # Prior MSE (Error if we only used the mean function)
+                if gp_model.mean_function is not None:
+                    mu_prior = gp_model.mean_function.f(gp_model.X)
+                    response.prior_mse = float(np.mean((mu_prior - gp_model.Y)**2))
+                    
+                    # Extract learned rho or constant value
+                    if isinstance(gp_model.mean_function, LowFiMapping):
+                        response.rho = float(gp_model.mean_function.rho[0])
+                    elif isinstance(gp_model.mean_function, GPy.mappings.Constant):
+                        response.rho = float(gp_model.mean_function.C[0])
+                    
+                    self.get_logger().info(f"GP Fit: LML={response.log_marginal_likelihood:.2f}, Rho={response.rho:.3f}, Resid MSE={response.training_mse:.4e}", throttle_duration_sec=10.0)
+                else:
+                    response.prior_mse = response.training_mse
+                    response.rho = 1.0
+                
+            except Exception as diag_e:
+                self.get_logger().warn(f"Failed to calculate GP diagnostics: {diag_e}")
             
         except Exception as e:
             self.get_logger().error(f"Failed to process prediction request: {e}")

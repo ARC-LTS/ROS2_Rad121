@@ -3,6 +3,7 @@
 float64[] observed_x
 float64[] observed_y
 float64[] observed_values_mean
+float64 mean_value
 
 # Optimization parameters
 int32 num_starts # Number of times to run the optimizer from different starting points

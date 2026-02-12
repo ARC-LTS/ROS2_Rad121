@@ -4,7 +4,17 @@ float64[] observed_x                      # Collected sample X coords
 float64[] observed_y                      # Collected sample Y coords
 float64[] observed_values_mean            # Collected sample radiation values for the mean
 float64[] observed_values_std_dev         # Collected sample radiation values for the std dev
+float64 mean_value                         # Background radiation level (prior mean)
 ---
 # Response
 float64[] predicted_mean
 float64[] predicted_std_dev
+
+# Diagnostics
+float64 log_marginal_likelihood
+float64 kernel_lengthscale
+float64 kernel_variance
+float64 noise_variance
+float64 training_mse
+float64 prior_mse
+float64 rho

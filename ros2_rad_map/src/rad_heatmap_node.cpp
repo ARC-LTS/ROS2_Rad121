@@ -21,6 +21,7 @@
 #include <map>
 #include <filesystem>
 #include <queue>
+#include <fstream>
 
 struct RadiationSample
 {
@@ -112,6 +113,17 @@ private:
     cv::Mat raw_mean_data_, raw_std_data_;
     cv::Mat persistent_visibility_mask_;
 
+    // Diagnostic state
+    struct GPDiagnostics {
+        double log_likelihood;
+        double lengthscale;
+        double variance;
+        double noise;
+        double mse;
+        double prior_mse;
+        double rho;
+    } latest_diagnostics_;
+
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr zone_sub_;
@@ -200,6 +212,28 @@ private:
         std::filesystem::path std_dev_path = dir / "historical_std_dev.png";
         bool success1 = cv::imwrite(mean_path.string(), mean_img);
         bool success2 = cv::imwrite(std_dev_path.string(), std_dev_img);
+
+        // Save GP Diagnostics to CSV
+        std::filesystem::path diag_path = dir / "gp_diagnostics.csv";
+        bool file_exists = std::filesystem::exists(diag_path);
+        std::ofstream diag_out(diag_path.string(), std::ios::app);
+        
+        if (diag_out.is_open()) {
+            if (!file_exists) {
+                diag_out << "timestamp,log_marginal_likelihood,kernel_lengthscale,kernel_variance,noise_variance,training_mse,prior_mse,rho\n";
+            }
+            
+            auto now = std::time(nullptr);
+            diag_out << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S") << ","
+                     << latest_diagnostics_.log_likelihood << ","
+                     << latest_diagnostics_.lengthscale << ","
+                     << latest_diagnostics_.variance << ","
+                     << latest_diagnostics_.noise << ","
+                     << latest_diagnostics_.mse << ","
+                     << latest_diagnostics_.prior_mse << ","
+                     << latest_diagnostics_.rho << "\n";
+            diag_out.close();
+        }
 
         if (success1 && success2)
         {
@@ -359,6 +393,7 @@ private:
         }
 
         auto request = std::make_shared<ros2_rad_map::srv::GPPredict::Request>();
+        request->mean_value = current_background_level_;
         for (const auto &s : hist_samples_copy)
         {
             request->observed_x.push_back(s.x);
@@ -407,6 +442,18 @@ private:
                 {
                     hist_mean_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_mean[i];
                     hist_std_raw.at<float>(valid_pixel_coords[i].second, valid_pixel_coords[i].first) = response->predicted_std_dev[i];
+                }
+
+                // Update Diagnostics
+                {
+                    std::lock_guard<std::mutex> lock(data_mutex_);
+                    latest_diagnostics_.log_likelihood = response->log_marginal_likelihood;
+                    latest_diagnostics_.lengthscale = response->kernel_lengthscale;
+                    latest_diagnostics_.variance = response->kernel_variance;
+                    latest_diagnostics_.noise = response->noise_variance;
+                    latest_diagnostics_.mse = response->training_mse;
+                    latest_diagnostics_.prior_mse = response->prior_mse;
+                    latest_diagnostics_.rho = response->rho;
                 }
 
                 // Update the persistent mask locally first

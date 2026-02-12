@@ -55,10 +55,10 @@ def generate_launch_description():
 
     # --- Return the master launch description ---
     return LaunchDescription([
-        simulation_launch,
+#        simulation_launch,
         gp_predictor_launch,
         rad_heatmap_launch,
-        rad_local_recovery_launch,
-        rad_costmap_visualizer_launch,
+#        rad_local_recovery_launch,
+#        rad_costmap_visualizer_launch,
     #    rad_nav2_launch,
     ])

@@ -27,7 +27,13 @@ gp_predictor_node:
   ros__parameters:
     kernel:
       type: "Matern52"
-      lengthscale: 5.0 # You can tune this value
+      lengthscale: 1.0 # Initial guess or fixed value
+    fix_lengthscale: False # Set to True for direct model comparison
+    fix_rho: False # Set to True to force rho to initial_rho
+    use_multi_fidelity: False
+    initial_rho: 1.0
+    model_path: "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
+    sparse_threshold: 300
 
 peak_finder_client_node:
   ros__parameters:
@@ -40,13 +46,8 @@ peak_finder_client_node:
     min_peak_mrem_hr: 0.1
 
 rad_costmap_visualizer_node:
-
   ros__parameters:
-
     heatmap_topic: "/rad_heatmap/raw_mean_map"
-
     map_topic: "/map"
-
     background_threshold_mrem_hr: 0.25
-
     critical_dose_mrem_hr: 2.0
