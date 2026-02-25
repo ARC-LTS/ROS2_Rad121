@@ -562,6 +562,7 @@ private:
 
         if (!hist_mean.empty()) {
             raw_mean_map_pub_.publish(*cv_bridge::CvImage(h, "32FC1", hist_mean).toImageMsg());
+            gp_mean_map_pub_.publish(*cv_bridge::CvImage(h, "32FC1", hist_mean).toImageMsg());
             std::lock_guard<std::mutex> d_lock(data_mutex_);
             raw_mean_data_ = hist_mean.clone();
         }

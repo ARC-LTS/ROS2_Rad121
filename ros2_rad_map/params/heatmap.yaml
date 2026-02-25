@@ -30,7 +30,7 @@ gp_predictor_node:
       lengthscale: 1.0 # Initial guess or fixed value
     fix_lengthscale: False # Set to True for direct model comparison
     fix_rho: False # Set to True to force rho to initial_rho
-    use_multi_fidelity: False
+    use_multi_fidelity: True
     initial_rho: 1.0
     model_path: "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
     sparse_threshold: 300
