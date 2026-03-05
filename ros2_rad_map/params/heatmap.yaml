@@ -11,6 +11,7 @@ rad_heatmap_node:
     recent_samples_window_size: 30
     raycasting_max_sources: 5
     raycasting_max_distance_m: 20.0
+    gp_update_frequency: 0.2
 
     gaussian_sigma: 15.0
     gaussian_blur_size: 3  # must be odd

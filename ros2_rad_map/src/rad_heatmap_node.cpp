@@ -48,6 +48,7 @@ public:
         this->declare_parameter<std::string>("output_directory", "/tmp");
         this->declare_parameter<int>("raycasting_max_sources", 5);
         this->declare_parameter<double>("raycasting_max_distance_m", 10.0);
+        this->declare_parameter<double>("gp_update_frequency", 0.2);
 
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
@@ -55,6 +56,7 @@ public:
         output_directory_ = this->get_parameter("output_directory").as_string();
         raycasting_max_sources_ = this->get_parameter("raycasting_max_sources").as_int();
         raycasting_max_distance_m_ = this->get_parameter("raycasting_max_distance_m").as_double();
+        double gp_update_frequency = this->get_parameter("gp_update_frequency").as_double();
 
         rclcpp::QoS map_qos(rclcpp::KeepLast(1));
         map_qos.transient_local().reliable();
@@ -83,6 +85,10 @@ public:
         save_maps_service_ = this->create_service<std_srvs::srv::Trigger>(
             "save_rad_maps",
             std::bind(&DynamicRadiationHeatmapNode::saveMapsCallback, this, std::placeholders::_1, std::placeholders::_2));
+        
+        gp_update_timer_ = this->create_wall_timer(
+            std::chrono::duration<double>(1.0 / gp_update_frequency),
+            std::bind(&DynamicRadiationHeatmapNode::triggerGPUpdate, this));
 
         RCLCPP_INFO(this->get_logger(), "Heatmap Node initialized. Waiting for GP service...");
         if (!gp_client_->wait_for_service(std::chrono::seconds(10)))
@@ -128,6 +134,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr zone_sub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_maps_service_;
+    rclcpp::TimerBase::SharedPtr gp_update_timer_;
     image_transport::Publisher historical_heatmap_pub_;
     image_transport::Publisher historical_std_dev_pub_;
     image_transport::Publisher historical_mean_overlay_pub_;
@@ -343,11 +350,8 @@ private:
                     if (historical_samples_.size() > 1000) {
                         historical_samples_.erase(historical_samples_.begin());
                     }
-                } else {
-                    return; // Skip GP update if no new information
                 }
             }
-            triggerGPUpdate();
         }
         catch (const tf2::TransformException &ex)
         {
