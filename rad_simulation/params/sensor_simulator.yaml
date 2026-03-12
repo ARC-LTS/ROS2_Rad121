@@ -9,7 +9,7 @@ rad_field_server:
   ros__parameters:
     map_frame: "map"
     robot_frame: "base_link"
-    enable_sources: false
+    enable_sources: true
     # known_sources: [-2.0, -2.0, 5.0, 5.0, 5.0, 15.0] # [x, y, intensity]
     num_unknown_sources: 0
     num_high_intensity_sources: 0

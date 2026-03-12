@@ -42,6 +42,9 @@ public:
     heatmap_sub_ = create_subscription<sensor_msgs::msg::Image>(
       heatmap_topic_, 10, std::bind(&RadCostmapVisualizerNode::heatmapCallback, this, std::placeholders::_1));
 
+    uncertainty_sub_ = create_subscription<sensor_msgs::msg::Image>(
+      "/rad_heatmap/historical_std_dev", 10, std::bind(&RadCostmapVisualizerNode::uncertaintyCallback, this, std::placeholders::_1));
+
     marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/radiation_cost_zones", 10);
     costmap_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(radiation_costmap_topic_, map_qos);
 
@@ -95,6 +98,12 @@ private:
     double map_origin_x = map_info_.origin.position.x;
     double map_origin_y = map_info_.origin.position.y;
 
+    cv::Mat uncertainty_img;
+    {
+        std::lock_guard<std::mutex> lock(uncertainty_mutex_);
+        uncertainty_img = latest_uncertainty_.clone();
+    }
+
     for (unsigned int r = 0; r < map_height; ++r) {
       for (unsigned int c = 0; c < map_width; ++c) {
         // 1. Get world coordinates of this map cell
@@ -107,7 +116,19 @@ private:
         
         // Use image dimensions for bounds checking
         if (r >= (unsigned int)cv_ptr->image.rows || c >= (unsigned int)cv_ptr->image.cols) {
+            radiation_costmap_msg.data[r * map_width + c] = 255; // NO_INFORMATION
             continue;
+        }
+
+        // Use uncertainty to mark unknown regions
+        if (!uncertainty_img.empty() && r < (unsigned int)uncertainty_img.rows && c < (unsigned int)uncertainty_img.cols) {
+            float uncertainty = uncertainty_img.at<float>(r, c);
+            // If uncertainty is high, mark as unknown to trigger frontier exploration
+            // A value of 0.5 is a heuristic for "we haven't visited this well enough"
+            if (uncertainty > 0.5) {
+                radiation_costmap_msg.data[r * map_width + c] = 255; // NO_INFORMATION
+                continue;
+            }
         }
 
         float radiation = cv_ptr->image.at<float>(r, c);
@@ -147,6 +168,18 @@ private:
     costmap_pub_->publish(radiation_costmap_msg);
   }
 
+  void uncertaintyCallback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(uncertainty_mutex_);
+    cv_bridge::CvImagePtr cv_ptr;
+    try {
+      cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_32FC1);
+      latest_uncertainty_ = cv_ptr->image;
+    } catch (const cv_bridge::Exception& e) {
+      RCLCPP_ERROR(get_logger(), "cv_bridge exception in uncertainty: %s", e.what());
+    }
+  }
+
   visualization_msgs::msg::Marker create_marker(std::string ns, int id, float r, float g, float b)
   {
       auto marker = visualization_msgs::msg::Marker();
@@ -180,8 +213,12 @@ private:
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr uncertainty_sub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
+
+  cv::Mat latest_uncertainty_;
+  std::mutex uncertainty_mutex_;
 };
 
 } // namespace rad_costmap_plugin

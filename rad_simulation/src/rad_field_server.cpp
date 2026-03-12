@@ -7,6 +7,9 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include <yaml-cpp/yaml.h>
+#include <fstream>
+#include <filesystem>
 
 #include <vector>
 #include <random>
@@ -52,9 +55,11 @@ public:
         this->declare_parameter<bool>("background_radiation_enabled", false);
         this->declare_parameter<double>("background_radiation_min", 0.0);
         this->declare_parameter<double>("background_radiation_max", 1.0);
+        this->declare_parameter<std::string>("output_yaml_file", "/var/home/doobs/Dev/ARC/ros_ws/src/ROS2_Rad121/rad_simulation/params/saved_sources.yaml");
 
         map_frame_ = this->get_parameter("map_frame").as_string();
         robot_frame_ = this->get_parameter("robot_frame").as_string();
+        output_file_ = this->get_parameter("output_yaml_file").as_string();
 
         // Create the service to spawn a new source at specific coordinates
         spawn_service_ = this->create_service<rad_simulation::srv::SpawnSource>(
@@ -113,6 +118,16 @@ public:
                 RCLCPP_INFO(this->get_logger(), "Real-time control: %s", response->message.c_str());
                 publish_markers();
             });
+
+        // Save sources to file service
+        save_sources_service_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/save_sources",
+            std::bind(&RadFieldServer::save_sources_callback, this, std::placeholders::_1, std::placeholders::_2));
+
+        // Load sources from file service
+        load_sources_service_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/load_sources",
+            std::bind(&RadFieldServer::load_sources_callback, this, std::placeholders::_1, std::placeholders::_2));
 
         // Create the publisher for visualization markers
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/sources", 10);
@@ -307,6 +322,89 @@ private:
         response->message = "Radiation source spawned at robot pose successfully.";
     }
 
+    void save_sources_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                              std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        try {
+            YAML::Node node;
+            std::vector<double> flat_list;
+            for (const auto& s : sources_) {
+                flat_list.push_back(s.position.x);
+                flat_list.push_back(s.position.y);
+                flat_list.push_back(s.intensity);
+            }
+            node["rad_field_server"]["ros__parameters"]["known_sources"] = flat_list;
+
+            std::filesystem::path p(output_file_);
+            if (p.has_parent_path()) {
+                std::filesystem::create_directories(p.parent_path());
+            }
+
+            std::ofstream fout(output_file_);
+            fout << node;
+            fout.close();
+
+            response->success = true;
+            response->message = "Saved " + std::to_string(sources_.size()) + " sources to " + output_file_;
+            RCLCPP_INFO(this->get_logger(), "%s", response->message.c_str());
+        } catch (const std::exception& e) {
+            response->success = false;
+            response->message = std::string("Failed to save sources: ") + e.what();
+            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+        }
+    }
+
+    void load_sources_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                              std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        try {
+            if (!std::filesystem::exists(output_file_)) {
+                response->success = false;
+                response->message = "Source file does not exist: " + output_file_;
+                RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+                return;
+            }
+
+            YAML::Node node = YAML::LoadFile(output_file_);
+            if (!node["rad_field_server"] || !node["rad_field_server"]["ros__parameters"] || 
+                !node["rad_field_server"]["ros__parameters"]["known_sources"]) {
+                response->success = false;
+                response->message = "Invalid YAML format in " + output_file_;
+                RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+                return;
+            }
+
+            std::vector<double> flat_list = node["rad_field_server"]["ros__parameters"]["known_sources"].as<std::vector<double>>();
+            
+            // Clear existing sources
+            sources_.clear();
+            next_source_id_ = 0;
+
+            for (size_t i = 0; i + 2 < flat_list.size(); i += 3) {
+                RadSource source;
+                source.id = next_source_id_++;
+                source.position.x = flat_list[i];
+                source.position.y = flat_list[i+1];
+                source.position.z = 0.0;
+                source.intensity = flat_list[i+2];
+                sources_.push_back(source);
+            }
+
+            // Enable sources
+            this->set_parameter(rclcpp::Parameter("enable_sources", true));
+
+            response->success = true;
+            response->message = "Loaded " + std::to_string(sources_.size()) + " sources from " + output_file_ + " and enabled them.";
+            RCLCPP_INFO(this->get_logger(), "%s", response->message.c_str());
+            
+            publish_markers();
+        } catch (const std::exception& e) {
+            response->success = false;
+            response->message = std::string("Failed to load sources: ") + e.what();
+            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+        }
+    }
+
     void publish_markers()
     {
         visualization_msgs::msg::MarkerArray marker_array;
@@ -395,6 +493,8 @@ private:
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_background_service_;
     rclcpp::Service<rad_simulation::srv::SetFloat64>::SharedPtr set_background_level_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_sources_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_sources_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr load_sources_service_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr background_pub_;
     rclcpp::TimerBase::SharedPtr update_timer_;
@@ -406,6 +506,7 @@ private:
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     std::string map_frame_;
     std::string robot_frame_;
+    std::string output_file_;
 
     // State
     std::vector<RadSource> sources_;

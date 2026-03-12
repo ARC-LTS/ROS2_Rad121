@@ -3,7 +3,7 @@ rad_heatmap_node:
     use_sim_time: True
     sensor_frame: "base_link"
     map_frame: "map"
-    output_directory: "/home/brendoncintas/radmon_ws/data/" # Changed from output_file
+    output_directory: "/var/home/doobs/Dev/ARC/ros_ws/data/" # Changed from output_file
 
     min_valid_mrem: 0.4
     min_sample_mrem: 0.0
@@ -33,8 +33,9 @@ gp_predictor_node:
     fix_rho: False # Set to True to force rho to initial_rho
     use_multi_fidelity: True
     initial_rho: 1.0
-    model_path: "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
-    sparse_threshold: 300
+    low_fi_max_prior: 0.1 # Cap the low-fi model influence to prevent initial high predictions
+    model_path: "/var/home/doobs/Dev/ARC/ros_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
+    sparse_threshold: 10
 
 peak_finder_client_node:
   ros__parameters:

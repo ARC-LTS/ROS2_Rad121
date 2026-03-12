@@ -6,3 +6,6 @@ local_recovery_node:
     robot_base_frame: "base_link"
     map_frame: "map"
     fallback_retreat_distance_m: 1.5
+    return_to_origin: true
+    origin_x: 0.0
+    origin_y: 0.0

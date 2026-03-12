@@ -37,7 +37,7 @@ ament_target_dependencies(rad_field_server
   std_msgs
 )
 rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
-target_link_libraries(rad_field_server "${cpp_typesupport_target}")
+target_link_libraries(rad_field_server yaml-cpp "${cpp_typesupport_target}")
 
 find_package(yaml-cpp REQUIRED)
 

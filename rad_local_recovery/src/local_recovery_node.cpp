@@ -30,6 +30,9 @@ public:
         this->declare_parameter<std::string>("robot_base_frame", "base_link");
         this->declare_parameter<std::string>("map_frame", "map");
         this->declare_parameter<double>("fallback_retreat_distance_m", 2.0);
+        this->declare_parameter<bool>("return_to_origin", true);
+        this->declare_parameter<double>("origin_x", 0.0);
+        this->declare_parameter<double>("origin_y", 0.0);
 
         critical_dose_ = this->get_parameter("critical_dose_mrem_hr").as_double();
         safe_dose_threshold_ = this->get_parameter("safe_dose_threshold_mrem_hr").as_double();
@@ -37,6 +40,9 @@ public:
         robot_base_frame_ = this->get_parameter("robot_base_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
         fallback_retreat_distance_ = this->get_parameter("fallback_retreat_distance_m").as_double();
+        return_to_origin_ = this->get_parameter("return_to_origin").as_bool();
+        origin_x_ = this->get_parameter("origin_x").as_double();
+        origin_y_ = this->get_parameter("origin_y").as_double();
 
         // Subscriptions
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
@@ -108,7 +114,17 @@ private:
         } catch (...) { return; }
 
         geometry_msgs::msg::Point escape_point;
-        bool point_found = findSafePoint(current_pose.pose.position, escape_point);
+        bool point_found = false;
+
+        if (return_to_origin_) {
+            escape_point.x = origin_x_;
+            escape_point.y = origin_y_;
+            escape_point.z = 0.0;
+            point_found = true;
+            RCLCPP_INFO(this->get_logger(), "Evacuating to origin (%.2f, %.2f)", origin_x_, origin_y_);
+        } else {
+            point_found = findSafePoint(current_pose.pose.position, escape_point);
+        }
 
         if (!point_found) {
             // Fallback: Just move backwards relative to current orientation
@@ -219,6 +235,9 @@ private:
     std::string robot_base_frame_;
     std::string map_frame_;
     double fallback_retreat_distance_;
+    bool return_to_origin_;
+    double origin_x_;
+    double origin_y_;
 
     // ROS Comms
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;

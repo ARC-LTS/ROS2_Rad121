@@ -14,23 +14,27 @@ import pickle
 import os
 
 class LowFiMapping(GPy.core.Mapping):
-    def __init__(self, low_fi_model, initial_rho=1.0):
+    def __init__(self, low_fi_model, initial_rho=1.0, max_prior=100.0):
         super().__init__(input_dim=2, output_dim=1)
         self.low_fi_model = low_fi_model
         # Create rho as a GPy parameter so it can be optimized
         self.rho = GPy.core.parameterization.Param('rho', initial_rho)
+        self.max_prior = max_prior
         self.link_parameter(self.rho)
 
     def f(self, X):
         X = np.atleast_2d(X)
         m, _ = self.low_fi_model.predict(X)
-        return self.rho * m
+        # Cap the low-fi prediction at max_prior to avoid biasing high-fi GP too much
+        m_capped = np.minimum(m, self.max_prior)
+        return self.rho * m_capped
 
     def update_gradients(self, dL_dF, X):
         X = np.atleast_2d(X)
         m, _ = self.low_fi_model.predict(X)
-        # dL/drho = sum( dL/df * df/drho ) = sum( dL/df * m )
-        self.rho.gradient = np.sum(dL_dF * m)
+        m_capped = np.minimum(m, self.max_prior)
+        # dL/drho = sum( dL/df * df/drho ) = sum( dL/df * m_capped )
+        self.rho.gradient = np.sum(dL_dF * m_capped)
 
 class GPPredictor(Node):
     def __init__(self):
@@ -46,6 +50,7 @@ class GPPredictor(Node):
         self.declare_parameter('model_path', '')
         self.declare_parameter('initial_rho', 1.0)
         self.declare_parameter('fix_rho', False)
+        self.declare_parameter('low_fi_max_prior', 100.0) # New: Cap the prior from low-fi model
         
         self.predict_srv = self.create_service(GPPredict, 'predict_gp', self.predict_callback)
         self.peaks_srv = self.create_service(FindPeaks, 'find_rad_peaks', self.find_peaks_callback)
@@ -176,10 +181,11 @@ class GPPredictor(Node):
         mf = None
         use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
         init_rho = self.get_parameter('initial_rho').get_parameter_value().double_value
+        max_prior = self.get_parameter('low_fi_max_prior').get_parameter_value().double_value
         
         if use_mf and self.gp_lo is not None:
             # Multi-fidelity mode: use low-fi model as mean with trainable rho
-            mf = LowFiMapping(self.gp_lo, initial_rho=init_rho)
+            mf = LowFiMapping(self.gp_lo, initial_rho=init_rho, max_prior=max_prior)
         elif mean_value is not None:
             # Single-fidelity mode: use constant background mean
             mf = GPy.mappings.Constant(input_dim=2, output_dim=1, value=mean_value)
