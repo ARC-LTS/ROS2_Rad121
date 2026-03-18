@@ -51,6 +51,9 @@ class GPPredictor(Node):
         self.declare_parameter('initial_rho', 1.0)
         self.declare_parameter('fix_rho', False)
         self.declare_parameter('low_fi_max_prior', 100.0) # New: Cap the prior from low-fi model
+        self.declare_parameter('landmark_buffer_size', 500)
+        self.declare_parameter('landmark_spatial_dist', 0.2)
+        self.declare_parameter('peak_confidence_threshold', 1.0) # Max allowed std dev
         
         self.predict_srv = self.create_service(GPPredict, 'predict_gp', self.predict_callback)
         self.peaks_srv = self.create_service(FindPeaks, 'find_rad_peaks', self.find_peaks_callback)
@@ -59,6 +62,7 @@ class GPPredictor(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.historical_samples = []
+        self.landmark_samples = [] # New: Buffer for high-radiation points
         self.last_sample_pos = None
         self.gp_model = None
         self.data_lock = threading.Lock()
@@ -130,16 +134,41 @@ class GPPredictor(Node):
             rad_value = msg.data[1]
 
             with self.data_lock:
-                # Spatial downsampling
+                # Spatial downsampling for regular buffer
                 if self.last_sample_pos is not None:
                     dist_sq = (x - self.last_sample_pos[0])**2 + (y - self.last_sample_pos[1])**2
                     if dist_sq < 0.04: # 0.2m move required
                         return
 
-                self.historical_samples.append({'x': x, 'y': y, 'value': rad_value})
+                sample = {'x': x, 'y': y, 'value': rad_value}
+                self.historical_samples.append(sample)
                 self.last_sample_pos = (x, y)
                 
-                # Cap the buffer
+                # Landmark logic: Keep high values that are spatially distinct
+                # Only consider if significantly above background
+                if rad_value > (self.current_background * 1.5):
+                    is_far_from_existing = True
+                    ls_min_dist_sq = (self.get_parameter('landmark_spatial_dist').get_parameter_value().double_value)**2
+                    
+                    for ls in self.landmark_samples:
+                        ls_dist_sq = (x - ls['x'])**2 + (y - ls['y'])**2
+                        if ls_dist_sq < ls_min_dist_sq:
+                            # If we are close to an existing landmark, replace it only if this value is higher
+                            if rad_value > ls['value']:
+                                ls['value'] = rad_value
+                                ls['x'] = x
+                                ls['y'] = y
+                            is_far_from_existing = False
+                            break
+                    
+                    if is_far_from_existing:
+                        self.landmark_samples.append(sample)
+                        # Cap landmark buffer by keeping highest values
+                        if len(self.landmark_samples) > self.get_parameter('landmark_buffer_size').get_parameter_value().integer_value:
+                            self.landmark_samples.sort(key=lambda s: s['value'], reverse=True)
+                            self.landmark_samples.pop()
+
+                # Cap the regular buffer
                 if len(self.historical_samples) > 1000:
                     self.historical_samples.pop(0)
 
@@ -150,7 +179,18 @@ class GPPredictor(Node):
         # Optimization: Use internal buffer if request is empty
         if len(observed_x) == 0:
             with self.data_lock:
+                # Merge historical and landmarks
                 samples = list(self.historical_samples)
+                for ls in self.landmark_samples:
+                    # Check if this landmark is already represented in recent samples
+                    is_redundant = False
+                    for s in samples:
+                        if (ls['x'] - s['x'])**2 + (ls['y'] - s['y'])**2 < 0.01: # 0.1m overlap
+                            is_redundant = True
+                            break
+                    if not is_redundant:
+                        samples.append(ls)
+
             if not samples:
                 return None, None
             observed_x = np.array([s['x'] for s in samples])
@@ -203,6 +243,12 @@ class GPPredictor(Node):
             self.get_logger().info(f"Fixed kernel lengthscale to {lengthscale}", throttle_duration_sec=60.0)
 
         # Apply Fixed Rho / Mean if requested
+        # Auto-fix rho if no significant radiation detected to avoid noise bias
+        max_train_val = np.max(training_values) if training_values.size > 0 else 0.0
+        if use_mf and hasattr(gp_model.mean_function, 'rho') and max_train_val < (mean_value * 1.5):
+             gp_model.mean_function.rho.fix()
+             # self.get_logger().info("Auto-fixed rho due to low signal-to-noise", throttle_duration_sec=60.0)
+
         if self.get_parameter('fix_rho').get_parameter_value().bool_value:
             if use_mf and hasattr(gp_model.mean_function, 'rho'):
                 gp_model.mean_function.rho.fix()
@@ -261,6 +307,15 @@ class GPPredictor(Node):
                 peak_x, peak_y = result.x
                 peak_val = -result.fun
                 
+                # Check confidence at peak
+                _, peak_var = target_model.predict(np.atleast_2d([peak_x, peak_y]))
+                peak_std = np.sqrt(peak_var[0, 0])
+                conf_thresh = self.get_parameter('peak_confidence_threshold').get_parameter_value().double_value
+                
+                if peak_std > conf_thresh:
+                    # self.get_logger().debug(f"Rejecting peak at ({peak_x:.2f}, {peak_y:.2f}) due to low confidence (std={peak_std:.2f})")
+                    continue
+
                 is_duplicate = False
                 for existing_peak in found_peaks:
                     dist_sq = (existing_peak[0] - peak_x)**2 + (existing_peak[1] - peak_y)**2

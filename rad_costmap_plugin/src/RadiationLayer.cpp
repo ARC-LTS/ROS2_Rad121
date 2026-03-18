@@ -20,12 +20,12 @@ void RadiationLayer::onInitialize()
   }
 
   declareParameter("heatmap_topic", rclcpp::ParameterValue("/rad_heatmap/raw_mean_map"));
-  declareParameter("background_threshold_mrem_hr", rclcpp::ParameterValue(0.25));
-  declareParameter("critical_dose_mrem_hr", rclcpp::ParameterValue(2.0));
+  declareParameter("warning_threshold_mrem_hr", rclcpp::ParameterValue(0.25));
+  declareParameter("evacuation_threshold_mrem_hr", rclcpp::ParameterValue(2.0));
   
   node->get_parameter(name_ + "." + "heatmap_topic", heatmap_topic_);
-  node->get_parameter(name_ + "." + "background_threshold_mrem_hr", warning_threshold_);
-  node->get_parameter(name_ + "." + "critical_dose_mrem_hr", evacuation_threshold_);
+  node->get_parameter(name_ + "." + "warning_threshold_mrem_hr", warning_threshold_);
+  node->get_parameter(name_ + "." + "evacuation_threshold_mrem_hr", evacuation_threshold_);
 
   RCLCPP_INFO(node->get_logger(), "Radiation Layer: Subscribing to heatmap topic: %s", heatmap_topic_.c_str());
 
@@ -123,11 +123,12 @@ void RadiationLayer::updateCosts(
 
         unsigned char radiation_cost = 0;
         if (radiation >= evacuation_threshold_) {
-          radiation_cost = nav2_costmap_2d::LETHAL_OBSTACLE;
+          // Use a high cost but not LETHAL to allow robot to move/recover
+          radiation_cost = 250; 
         } else {
           double scale = (radiation - warning_threshold_) / (evacuation_threshold_ - warning_threshold_);
-          // Scale from 1 up to INSCRIBED_INFLATED_OBSTACLE (253)
-          radiation_cost = 1 + static_cast<unsigned char>(scale * (nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 2));
+          // Scale from 1 up to 249
+          radiation_cost = 1 + static_cast<unsigned char>(scale * 248.0);
         }
         
         master_array[index] = std::max(current_cost, radiation_cost);

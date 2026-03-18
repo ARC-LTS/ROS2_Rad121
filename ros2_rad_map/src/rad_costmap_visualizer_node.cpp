@@ -24,14 +24,14 @@ public:
     declare_parameter("heatmap_topic", rclcpp::ParameterValue("/rad_heatmap/raw_mean_map"));
     declare_parameter("map_topic", rclcpp::ParameterValue("/map"));
     declare_parameter("radiation_costmap_topic", rclcpp::ParameterValue("/radiation_costmap"));
-    declare_parameter("background_threshold_mrem_hr", rclcpp::ParameterValue(0.25));
-    declare_parameter("critical_dose_mrem_hr", rclcpp::ParameterValue(2.0));
+    declare_parameter("warning_threshold_mrem_hr", rclcpp::ParameterValue(0.25));
+    declare_parameter("evacuation_threshold_mrem_hr", rclcpp::ParameterValue(2.0));
     
     heatmap_topic_ = get_parameter("heatmap_topic").as_string();
     map_topic_ = get_parameter("map_topic").as_string();
     radiation_costmap_topic_ = get_parameter("radiation_costmap_topic").as_string();
-    warning_threshold_ = get_parameter("background_threshold_mrem_hr").as_double();
-    evacuation_threshold_ = get_parameter("critical_dose_mrem_hr").as_double();
+    warning_threshold_ = get_parameter("warning_threshold_mrem_hr").as_double();
+    evacuation_threshold_ = get_parameter("evacuation_threshold_mrem_hr").as_double();
     
     rclcpp::QoS map_qos(rclcpp::KeepLast(1));
     map_qos.transient_local().reliable();
@@ -43,7 +43,7 @@ public:
       heatmap_topic_, 10, std::bind(&RadCostmapVisualizerNode::heatmapCallback, this, std::placeholders::_1));
 
     uncertainty_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      "/rad_heatmap/historical_std_dev", 10, std::bind(&RadCostmapVisualizerNode::uncertaintyCallback, this, std::placeholders::_1));
+      "/rad_heatmap/gp_std_dev", 10, std::bind(&RadCostmapVisualizerNode::uncertaintyCallback, this, std::placeholders::_1));
 
     marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/radiation_cost_zones", 10);
     costmap_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(radiation_costmap_topic_, map_qos);

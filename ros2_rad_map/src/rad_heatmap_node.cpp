@@ -79,6 +79,7 @@ public:
         historical_mean_overlay_pub_ = it.advertise("/rad_heatmap/historical_mean_overlay", 1);
         raw_mean_map_pub_ = it.advertise("/rad_heatmap/raw_mean_map", 1);
         gp_mean_map_pub_ = it.advertise("/rad_heatmap/gp_mean_map", 1);
+        gp_std_dev_pub_ = it.advertise("/rad_heatmap/gp_std_dev", 1);
 
         gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
 
@@ -140,6 +141,7 @@ private:
     image_transport::Publisher historical_mean_overlay_pub_;
     image_transport::Publisher raw_mean_map_pub_;
     image_transport::Publisher gp_mean_map_pub_;
+    image_transport::Publisher gp_std_dev_pub_;
     rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
 
@@ -572,6 +574,7 @@ private:
         }
         
         if (!hist_std.empty()) {
+            gp_std_dev_pub_.publish(*cv_bridge::CvImage(h, "32FC1", hist_std).toImageMsg());
             std::lock_guard<std::mutex> d_lock(data_mutex_);
             raw_std_data_ = hist_std.clone();
         }

@@ -33,7 +33,8 @@ def generate_launch_description():
         actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(nav_share, 'launch', 'slam.launch.py')
-            )
+            ),
+            launch_arguments={'output': 'log'}.items()
         )]
     )
 

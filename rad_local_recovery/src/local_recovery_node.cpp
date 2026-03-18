@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <tf2_ros/buffer.h>
@@ -21,7 +22,8 @@ public:
         : Node("local_recovery_node"),
           tf_buffer_(this->get_clock()),
           tf_listener_(tf_buffer_),
-          is_recovering_(false)
+          is_recovering_(false),
+          exploration_finished_(false)
     {
         // Parameters
         this->declare_parameter<double>("critical_dose_mrem_hr", 2.0);
@@ -56,6 +58,15 @@ public:
         heatmap_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/rad_heatmap/gp_mean_map", 10, std::bind(&LocalRecoveryNode::heatmapCallback, this, std::placeholders::_1));
 
+        explore_finished_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+            "explore/is_finished", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+            [this](const std_msgs::msg::Bool::SharedPtr msg) {
+                this->exploration_finished_ = msg->data;
+                if (this->exploration_finished_) {
+                    RCLCPP_INFO(this->get_logger(), "Exploration finished detected. Disabling local recovery logic.");
+                }
+            });
+
         // Action Client
         nav_action_client_ = rclcpp_action::create_client<NavigateToPose>(this, "navigate_to_pose");
 
@@ -75,6 +86,8 @@ private:
 
     void recoveryTick()
     {
+        if (exploration_finished_) return;
+        
         if (current_rad_val_ > critical_dose_) {
             triggerRecovery();
         }
@@ -243,6 +256,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr explore_finished_sub_;
     rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
     rclcpp::TimerBase::SharedPtr recovery_timer_;
     tf2_ros::Buffer tf_buffer_;
@@ -251,6 +265,7 @@ private:
     // State
     double current_rad_val_ = 0.0;
     bool is_recovering_ = false;
+    bool exploration_finished_ = false;
     rclcpp::Time last_goal_time_{0, 0, RCL_ROS_TIME};
     nav_msgs::msg::OccupancyGrid::SharedPtr latest_costmap_;
     sensor_msgs::msg::Image::SharedPtr latest_heatmap_;
