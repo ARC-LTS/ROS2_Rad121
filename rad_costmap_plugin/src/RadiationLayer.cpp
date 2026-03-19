@@ -63,18 +63,20 @@ void RadiationLayer::heatmapCallback(const sensor_msgs::msg::Image::SharedPtr ms
 }
 
 void RadiationLayer::updateBounds(
-  double /*robot_x*/, double /*robot_y*/, double /*robot_yaw*/,
+  double robot_x, double robot_y, double /*robot_yaw*/,
   double * min_x, double * min_y, double * max_x, double * max_y)
 {
   if (latest_heatmap_.empty()) {
     return;
   }
 
-  // Force update of the entire costmap area to ensure radiation costs are persistent
-  *min_x = std::min(*min_x, layered_costmap_->getCostmap()->getOriginX());
-  *min_y = std::min(*min_y, layered_costmap_->getCostmap()->getOriginY());
-  *max_x = std::max(*max_x, layered_costmap_->getCostmap()->getOriginX() + layered_costmap_->getCostmap()->getSizeInMetersX());
-  *max_y = std::max(*max_y, layered_costmap_->getCostmap()->getOriginY() + layered_costmap_->getCostmap()->getSizeInMetersY());
+  // Update a limited area around the robot (e.g., 10m radius) instead of the entire map.
+  // This drastically reduces computation in the updateCosts loop and fixes performance bottlenecks.
+  double update_radius = 10.0;
+  *min_x = std::min(*min_x, robot_x - update_radius);
+  *min_y = std::min(*min_y, robot_y - update_radius);
+  *max_x = std::max(*max_x, robot_x + update_radius);
+  *max_y = std::max(*max_y, robot_y + update_radius);
 }
 
 void RadiationLayer::updateCosts(
