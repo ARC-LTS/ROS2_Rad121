@@ -1,0 +1,5 @@
+<library path="rad_costmap_plugin">
+  <class type="rad_costmap_plugin::RadiationLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>A costmap layer that adds cost based on a radiation heatmap.</description>
+  </class>
+</library>

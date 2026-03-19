@@ -1,0 +1,31 @@
+rad_sensor_simulator:
+  ros__parameters:
+    map_frame: "map"
+    robot_frame: "base_link"
+    publish_rate_hz: 10.0
+    min_sensing_distance_m: 0.58
+
+rad_field_server:
+  ros__parameters:
+    map_frame: "map"
+    robot_frame: "base_link"
+    enable_sources: true
+    # known_sources: [-2.0, -2.0, 5.0, 5.0, 5.0, 15.0] # [x, y, intensity]
+    num_unknown_sources: 0
+    num_high_intensity_sources: 0
+    high_intensity_threshold: 10.0
+    low_intensity_min: 1.0
+    low_intensity_max: 3.0
+    background_radiation_enabled: true
+    background_radiation_min: 0.05
+    background_radiation_max: 1.0
+
+battery_simulator:
+  ros__parameters:
+    initial_percentage: 1.0
+    nominal_voltage: 24.0
+    capacity_ah: 20.0
+    idle_current_amps: 1.25
+    discharge_rate_per_meter: 0.0001
+    odom_topic: "/odometry"
+    battery_topic: "/battery_state"

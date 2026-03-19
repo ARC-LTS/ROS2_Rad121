@@ -1,0 +1,11 @@
+local_recovery_node:
+  ros__parameters:
+    critical_dose_mrem_hr: 5.0
+    safe_dose_threshold_mrem_hr: 0.5
+    recovery_search_distance_m: 15.0
+    robot_base_frame: "base_link"
+    map_frame: "map"
+    fallback_retreat_distance_m: 1.5
+    return_to_origin: true
+    origin_x: 0.0
+    origin_y: 0.0

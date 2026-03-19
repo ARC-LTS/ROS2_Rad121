@@ -1,0 +1,6 @@
+rad_safety_monitor_node:
+  ros__parameters:
+    emergency_threshold_mrem_hr: 2.0
+    retreat_distance_m: 1.5
+    robot_base_frame: "base_link"
+    map_frame: "map"

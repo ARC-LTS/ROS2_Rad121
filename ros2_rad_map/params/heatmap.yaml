@@ -1,0 +1,55 @@
+rad_heatmap_node:
+  ros__parameters:
+    use_sim_time: True
+    sensor_frame: "base_link"
+    map_frame: "map"
+    output_directory: "/home/brendoncintas/radmon_ws/data/" 
+
+    min_valid_mrem: 0.4
+    min_sample_mrem: 0.0
+    background_threshold_mrem_hr: 0.0
+    recent_samples_window_size: 30
+    raycasting_max_sources: 5
+    raycasting_max_distance_m: 20.0
+    gp_update_frequency: 0.2
+
+    gaussian_sigma: 15.0
+    gaussian_blur_size: 3  # must be odd
+
+    zone_separation_aggressiveness: 0.75
+
+
+rad_mapper_node:
+  ros__parameters:
+    target_frame: "base_link"
+    source_frame: "odom"
+
+gp_predictor_node:
+  ros__parameters:
+    kernel:
+      type: "Matern52"
+      lengthscale: 1.0 # Initial guess or fixed value
+    fix_lengthscale: False # Set to True for direct model comparison
+    fix_rho: False # Set to True to force rho to initial_rho
+    use_multi_fidelity: True
+    initial_rho: 1.0
+    low_fi_max_prior: 0.1 # Cap the low-fi model influence to prevent initial high predictions
+    model_path: "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
+    sparse_threshold: 10
+
+peak_finder_client_node:
+  ros__parameters:
+    sensor_frame: "base_link"
+    map_frame: "map"
+    num_starts: 30
+    marker_scale: 0.5
+    marker_color_r: [1.0, 0.0, 0.0, 1.0]
+    matching_threshold_m: 1.5
+    min_peak_mrem_hr: 0.1
+
+rad_costmap_visualizer_node:
+  ros__parameters:
+    heatmap_topic: "/rad_heatmap/raw_mean_map"
+    map_topic: "/map"
+    warning_threshold_mrem_hr: 0.5
+    evacuation_threshold_mrem_hr: 5.0
