@@ -7,6 +7,7 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "rad_simulation/msg/rad_source_array.hpp"
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <filesystem>
@@ -53,7 +54,7 @@ public:
         this->declare_parameter<double>("low_intensity_min", 2.5);
         this->declare_parameter<double>("low_intensity_max", 5.0);
         this->declare_parameter<bool>("background_radiation_enabled", false);
-        this->declare_parameter<double>("background_radiation_min", 0.0);
+        this->declare_parameter<double>("background_radiation_min", 0.05);
         this->declare_parameter<double>("background_radiation_max", 1.0);
         this->declare_parameter<std::string>("output_yaml_file", "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/rad_simulation/params/saved_sources.yaml");
 
@@ -135,6 +136,9 @@ public:
         // Create the publisher for background radiation level
         background_pub_ = this->create_publisher<std_msgs::msg::Float64>("~/background_radiation", 10);
 
+        // Create the publisher for raw source data
+        sources_data_pub_ = this->create_publisher<rad_simulation::msg::RadSourceArray>("~/sources_data", 10);
+
         // Create a timer to periodically publish markers and background radiation
         update_timer_ = this->create_wall_timer(
             std::chrono::seconds(1),
@@ -158,6 +162,22 @@ private:
     {
         publish_markers();
         publish_background();
+        publish_sources_data();
+    }
+
+    void publish_sources_data()
+    {
+        rad_simulation::msg::RadSourceArray msg;
+        if (this->get_parameter("enable_sources").as_bool()) {
+            for (const auto &source : sources_) {
+                rad_simulation::msg::RadSource s;
+                s.id = source.id;
+                s.position = source.position;
+                s.intensity = source.intensity;
+                msg.sources.push_back(s);
+            }
+        }
+        sources_data_pub_->publish(msg);
     }
 
     void map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
@@ -497,6 +517,7 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr load_sources_service_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr background_pub_;
+    rclcpp::Publisher<rad_simulation::msg::RadSourceArray>::SharedPtr sources_data_pub_;
     rclcpp::TimerBase::SharedPtr update_timer_;
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;

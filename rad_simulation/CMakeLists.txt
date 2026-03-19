@@ -22,6 +22,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AddSource.srv"
   "srv/SpawnSource.srv"
   "srv/SpawnRandomSources.srv"
+  "msg/RadSource.msg"
+  "msg/RadSourceArray.msg"
   DEPENDENCIES geometry_msgs
 )
 
@@ -57,6 +59,7 @@ ament_target_dependencies(rad_sensor_simulator
   tf2_ros
   tf2_geometry_msgs
 )
+target_link_libraries(rad_sensor_simulator "${cpp_typesupport_target}")
 
 install(TARGETS
   rad_field_server

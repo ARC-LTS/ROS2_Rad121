@@ -466,14 +466,20 @@ private:
                 cv::Mat local_mask = visibility_mask_copy.clone();
                 updatePersistentMask(local_mask, hist_samples_copy, map_copy, raycasting_map_copy);
 
-                // Apply mask
+                // Improved Gap Filling: Use a combination of visibility mask and uncertainty threshold
+                // to allow GP to interpolate into gaps while still masking truly unknown/distant areas.
                 double bg = current_background_level_;
                 cv::Mat hist_mean_occluded(hist_mean_raw.size(), hist_mean_raw.type(), cv::Scalar(bg));
                 cv::Mat hist_std_occluded(hist_std_raw.size(), hist_std_raw.type(), cv::Scalar(0.0));
 
                 for (int r = 0; r < hist_mean_raw.rows; ++r) {
                     for (int c = 0; c < hist_mean_raw.cols; ++c) {
-                        if (local_mask.at<uchar>(r, c) == 255) {
+                        float uncertainty = hist_std_raw.at<float>(r, c);
+                        bool is_visible = (local_mask.at<uchar>(r, c) == 255);
+                        
+                        // Heuristic: If we are visible OR if uncertainty is low enough, trust the GP prediction.
+                        // This fills 'gaps' in the radiation field where raycasting might have failed but GP has high confidence.
+                        if (is_visible || uncertainty < 1.0) { // Trust GP if it's confident (uncertainty < 1.0)
                             hist_mean_occluded.at<float>(r, c) = hist_mean_raw.at<float>(r, c);
                             hist_std_occluded.at<float>(r, c) = hist_std_raw.at<float>(r, c);
                         }

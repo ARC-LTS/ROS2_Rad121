@@ -1,6 +1,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "rad_simulation/msg/rad_source_array.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
@@ -33,17 +34,21 @@ public:
         this->declare_parameter<std::string>("robot_frame", "base_link");
         this->declare_parameter<double>("publish_rate_hz", 10.0);
         this->declare_parameter<double>("min_sensing_distance_m", 0.58);
+        this->declare_parameter<bool>("background_radiation_enabled", true);
+        this->declare_parameter<double>("background_radiation_min", 0.05);
+        this->declare_parameter<double>("background_radiation_max", 1.0);
         
         map_frame_ = this->get_parameter("map_frame").as_string();
         robot_frame_ = this->get_parameter("robot_frame").as_string();
         double publish_rate = this->get_parameter("publish_rate_hz").as_double();
         double min_sensing_distance = this->get_parameter("min_sensing_distance_m").as_double();
+        min_distance_sq_ = min_sensing_distance * min_distance_sq_ / (min_sensing_distance != 0 ? 1.0 : 1.0); // Resetting logic
         min_distance_sq_ = min_sensing_distance * min_sensing_distance;
 
 
-        // Subscription to the source markers from the field server
-        source_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
-            "/rad_field_server/sources", 10,
+        // Subscription to the raw source data from the field server
+        source_sub_ = this->create_subscription<rad_simulation::msg::RadSourceArray>(
+            "/rad_field_server/sources_data", 10,
             std::bind(&RadSensorSimulator::sources_callback, this, std::placeholders::_1));
         
         // Subscription to background radiation
@@ -63,40 +68,48 @@ public:
     }
 
 private:
+    double get_spatial_background(double x, double y)
+    {
+        if (!this->get_parameter("background_radiation_enabled").as_bool()) {
+            return 0.0;
+        }
+
+        double bg_min = this->get_parameter("background_radiation_min").as_double();
+        double bg_max = this->get_parameter("background_radiation_max").as_double();
+
+        // Spatial noise function to simulate "infinite number of fixed point sources".
+        // Deterministic based on coordinates (no temporal noise).
+        // Using a multi-scale sine sum to create a natural-looking background field.
+        double val = std::sin(x * 0.43) * std::cos(y * 0.37) + 
+                     std::sin(x * 1.21 + 0.5) * std::sin(y * 1.33 + 1.2) +
+                     std::cos(x * 2.87 + 2.1) * std::sin(y * 3.11 + 0.8) +
+                     std::sin(x * 5.71 + 3.4) * std::cos(y * 6.23 + 4.1);
+        
+        // val is in roughly [-4, 4]. Normalize to [0, 1]
+        double normalized = (val + 4.0) / 8.0;
+        normalized = std::max(0.0, std::min(1.0, normalized));
+        
+        return bg_min + normalized * (bg_max - bg_min);
+    }
+
     void background_callback(const std_msgs::msg::Float64::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(source_mutex_);
         background_radiation_ = msg->data;
     }
 
-    void sources_callback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
+    void sources_callback(const rad_simulation::msg::RadSourceArray::SharedPtr msg)
     {
         std::lock_guard<std::mutex> lock(source_mutex_);
         sources_.clear();
 
-        for (const auto &marker : msg->markers)
+        for (const auto &s : msg->sources)
         {
-            // We only care about the ADD actions for SPHERE markers
-            if (marker.type == visualization_msgs::msg::Marker::SPHERE &&
-                marker.action == visualization_msgs::msg::Marker::ADD)
-            {
-                RadSource source;
-                source.id = marker.id;
-                source.position = marker.pose.position;
-                
-                // Assuming intensity is derived from scale in a consistent way
-                // In our updated server, we use a different normalization but sensor 
-                // just needs a way to get it back. 
-                // If the server uses: scale = 0.2 + norm * 0.8
-                // We'll keep the inverse logic, but ideally we'd pass intensity more directly.
-                double normalized_intensity = (marker.scale.x - 0.2) / 0.8;
-                // Re-calculating intensity from normalized value
-                // Note: This assumes knowledge of how the server scales markers.
-                // We'll use 10.0 as a reference max for "normal" sources.
-                source.intensity = normalized_intensity * 7.5 + 2.5;
-
-                sources_.push_back(source);
-            }
+            RadSource source;
+            source.id = s.id;
+            source.position = s.position;
+            source.intensity = s.intensity;
+            sources_.push_back(source);
         }
     }
 
@@ -117,14 +130,13 @@ private:
         }
 
         std::vector<RadSource> sources_copy;
-        double background_copy;
         {
             std::lock_guard<std::mutex> lock(source_mutex_);
             sources_copy = sources_;
-            background_copy = background_radiation_;
         }
 
-        double total_mrem_hr = background_copy;
+        // Use spatial background based on position (removes temporal sensor noise)
+        double total_mrem_hr = get_spatial_background(sensor_position.x, sensor_position.y);
 
         for (const auto &source : sources_copy)
         {
@@ -138,8 +150,10 @@ private:
                 dist_sq = min_distance_sq_;
             }
 
-            // Inverse square law
-            total_mrem_hr += source.intensity / dist_sq;
+            // Improved point source model:
+            // I(r) = I_source * (r_min^2 / r^2)
+            // This ensures that I_source is the peak reading at the minimum sensing distance.
+            total_mrem_hr += source.intensity * (min_distance_sq_ / dist_sq);
         }
 
         // Publish the message
@@ -150,7 +164,7 @@ private:
     }
 
     // ROS Comms
-    rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr source_sub_;
+    rclcpp::Subscription<rad_simulation::msg::RadSourceArray>::SharedPtr source_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr rad_pub_;
     rclcpp::TimerBase::SharedPtr timer_;

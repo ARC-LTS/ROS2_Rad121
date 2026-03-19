@@ -103,15 +103,32 @@ void RadiationLayer::updateCosts(
       double wx = origin_x + (i + 0.5) * res;
       double wy = origin_y + (j + 0.5) * res;
 
-      // 2. Transform world coordinate to heatmap pixel coordinate
-      int h_x = static_cast<int>((wx - map_info_.origin.position.x) / map_info_.resolution);
-      int h_y = static_cast<int>((wy - map_info_.origin.position.y) / map_info_.resolution);
+      // 2. Transform world coordinate to heatmap pixel coordinate (floating point)
+      double h_x = (wx - map_info_.origin.position.x) / map_info_.resolution;
+      double h_y = (wy - map_info_.origin.position.y) / map_info_.resolution;
 
-      if (h_x < 0 || h_x >= latest_heatmap_.cols || h_y < 0 || h_y >= latest_heatmap_.rows) {
+      if (h_x < 0 || h_x >= latest_heatmap_.cols - 1 || h_y < 0 || h_y >= latest_heatmap_.rows - 1) {
         continue;
       }
 
-      float radiation = latest_heatmap_.at<float>(h_y, h_x);
+      // Bilinear Interpolation for smoother, non-voxelized costs
+      int x1 = static_cast<int>(std::floor(h_x));
+      int y1 = static_cast<int>(std::floor(h_y));
+      int x2 = x1 + 1;
+      int y2 = y1 + 1;
+
+      float dx = static_cast<float>(h_x - x1);
+      float dy = static_cast<float>(h_y - y1);
+
+      float f11 = latest_heatmap_.at<float>(y1, x1);
+      float f12 = latest_heatmap_.at<float>(y2, x1);
+      float f21 = latest_heatmap_.at<float>(y1, x2);
+      float f22 = latest_heatmap_.at<float>(y2, x2);
+
+      float radiation = (1 - dx) * (1 - dy) * f11 +
+                        (1 - dx) * dy * f12 +
+                        dx * (1 - dy) * f21 +
+                        dx * dy * f22;
 
       if (radiation > warning_threshold_) {
         int index = master_grid.getIndex(i, j);

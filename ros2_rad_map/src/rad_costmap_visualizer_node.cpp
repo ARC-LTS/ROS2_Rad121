@@ -164,7 +164,7 @@ private:
         marker_array.markers.push_back(warning_marker);
     }
 
-    marker_pub_->publish(marker_array);
+    // marker_pub_->publish(marker_array);
     costmap_pub_->publish(radiation_costmap_msg);
   }
 

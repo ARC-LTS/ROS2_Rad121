@@ -17,7 +17,7 @@ rad_field_server:
     low_intensity_min: 1.0
     low_intensity_max: 3.0
     background_radiation_enabled: true
-    background_radiation_min: 0.0
+    background_radiation_min: 0.05
     background_radiation_max: 1.0
 
 battery_simulator:
