@@ -34,6 +34,7 @@ private:
   std::string heatmap_topic_;
   double warning_threshold_;
   double evacuation_threshold_;
+  unsigned char max_cost_;
   bool new_heatmap_received_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;

@@ -2,6 +2,7 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <tf2_ros/buffer.h>
@@ -35,6 +36,8 @@ public:
         this->declare_parameter<bool>("return_to_origin", true);
         this->declare_parameter<double>("origin_x", 0.0);
         this->declare_parameter<double>("origin_y", 0.0);
+        this->declare_parameter<std::string>("stop_explore_service", "/explore_node/stop");
+        this->declare_parameter<std::string>("start_explore_service", "/explore_node/start");
 
         critical_dose_ = this->get_parameter("critical_dose_mrem_hr").as_double();
         safe_dose_threshold_ = this->get_parameter("safe_dose_threshold_mrem_hr").as_double();
@@ -45,6 +48,8 @@ public:
         return_to_origin_ = this->get_parameter("return_to_origin").as_bool();
         origin_x_ = this->get_parameter("origin_x").as_double();
         origin_y_ = this->get_parameter("origin_y").as_double();
+        stop_explore_srv_name_ = this->get_parameter("stop_explore_service").as_string();
+        start_explore_srv_name_ = this->get_parameter("start_explore_service").as_string();
 
         // Subscriptions
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
@@ -69,6 +74,10 @@ public:
 
         // Action Client
         nav_action_client_ = rclcpp_action::create_client<NavigateToPose>(this, "navigate_to_pose");
+
+        // Service Clients
+        stop_explore_client_ = this->create_client<std_srvs::srv::Trigger>(stop_explore_srv_name_);
+        start_explore_client_ = this->create_client<std_srvs::srv::Trigger>(start_explore_srv_name_);
 
         // Dynamic recovery timer
         recovery_timer_ = this->create_wall_timer(
@@ -109,13 +118,19 @@ private:
     {
         auto now = this->get_clock()->now();
         
-        // Prevent frequent preemption unless we've been stuck for a while
-        if (is_recovering_ && (now - last_goal_time_).seconds() < 5.0) {
+        // If already recovering and moving, don't preempt unless we've been stuck for a while (10s)
+        // or if we just started (is_recovering_ was false).
+        if (is_recovering_ && (now - last_goal_time_).seconds() < 10.0) {
             return;
         }
 
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Critical radiation (%.2f)! Executing recovery.", current_rad_val_);
         
+        // Stop exploration first to prevent fighting for goals
+        if (!is_recovering_) {
+            callTriggerService(stop_explore_client_, "Stop Exploration");
+        }
+
         geometry_msgs::msg::PoseStamped current_pose;
         try {
             geometry_msgs::msg::TransformStamped t = tf_buffer_.lookupTransform(
@@ -133,8 +148,26 @@ private:
             escape_point.x = origin_x_;
             escape_point.y = origin_y_;
             escape_point.z = 0.0;
-            point_found = true;
-            RCLCPP_INFO(this->get_logger(), "Evacuating to origin (%.2f, %.2f)", origin_x_, origin_y_);
+            
+            // Validate origin against map bounds
+            std::lock_guard<std::mutex> map_lock(map_mutex_);
+            if (latest_costmap_) {
+                float res = latest_costmap_->info.resolution;
+                float ox = latest_costmap_->info.origin.position.x;
+                float oy = latest_costmap_->info.origin.position.y;
+                int w = latest_costmap_->info.width;
+                int h = latest_costmap_->info.height;
+                int px = (escape_point.x - ox) / res;
+                int py = (escape_point.y - oy) / res;
+                if (px < 2 || px >= w - 2 || py < 2 || py >= h - 2) {
+                    RCLCPP_WARN(this->get_logger(), "Origin is out of map bounds! Falling back to safe point search.");
+                    return_to_origin_ = false;
+                    point_found = findSafePoint(current_pose.pose.position, escape_point);
+                } else {
+                    point_found = true;
+                    RCLCPP_INFO(this->get_logger(), "Evacuating to origin (%.2f, %.2f)", origin_x_, origin_y_);
+                }
+            }
         } else {
             point_found = findSafePoint(current_pose.pose.position, escape_point);
         }
@@ -196,6 +229,9 @@ private:
         float best_utility = -std::numeric_limits<float>::max();
         bool found = false;
 
+        // Safety margin from map edges
+        int margin = 5;
+
         // More granular search: balance safety and distance
         for (int r = 5; r < max_search_px; r += 5) {
             for (int i = 0; i < 360; i += 15) {
@@ -203,17 +239,21 @@ private:
                 int px = robot_px + r * cos(angle);
                 int py = robot_py + r * sin(angle);
 
-                if (px < 0 || px >= width || py < 0 || py >= height) continue;
+                // Strict boundary check
+                if (px < margin || px >= width - margin || py < margin || py >= height - margin) continue;
 
                 int map_idx = py * width + px;
-                // Check if navigable (cost < 100 avoids obstacles and high inflation)
-                if (costmap->data[map_idx] >= 0 && costmap->data[map_idx] < 100) {
+                unsigned char cost = costmap->data[map_idx];
+                // Check if navigable (cost < 70 avoids inflation from walls better)
+                if (cost >= 0 && cost < 70) {
                     float rad = cv_ptr->image.at<float>(py, px);
                     
-                    // Utility = -Radiation - Normalized_Distance
-                    // We want low radiation AND low distance, but safety is priority
+                    // Utility = -Radiation + Normalized_Distance - Normalized_Cost
+                    // We want low radiation, reasonable distance, and LOW cost (far from obstacles)
                     float dist_m = r * res;
-                    float utility = -rad * 10.0f - dist_m;
+                    float utility = -rad * 10.0f + 
+                                    (dist_m / recovery_search_distance_) - 
+                                    (static_cast<float>(cost) / 50.0f);
 
                     if (utility > best_utility) {
                         best_utility = utility;
@@ -223,8 +263,8 @@ private:
                         found = true;
                     }
                     
-                    // If we found a genuinely safe point, we can stop early if it's close enough
-                    if (rad < safe_dose_threshold_ && dist_m > 2.0) {
+                    // If we found a genuinely safe point that is also reasonably far, we can stop early
+                    if (rad < safe_dose_threshold_ && dist_m > 5.0) {
                         return true;
                     }
                 }
@@ -235,10 +275,34 @@ private:
 
     void recoveryResultCallback(const GoalHandleNavigateToPose::WrappedResult & result)
     {
+        is_recovering_ = false; // Reset to allow subsequent recovery attempts
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
-            is_recovering_ = false;
-            RCLCPP_INFO(this->get_logger(), "Successfully reached safe zone.");
+            RCLCPP_INFO(this->get_logger(), "Successfully reached safe zone. Resuming exploration.");
+            callTriggerService(start_explore_client_, "Start Exploration");
+        } else {
+            RCLCPP_WARN(this->get_logger(), "Recovery navigation failed (code %d). Will retry if radiation remains critical.", static_cast<int>(result.code));
         }
+    }
+
+    void callTriggerService(rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr client, const std::string& label)
+    {
+        if (!client->wait_for_service(std::chrono::seconds(1))) {
+            RCLCPP_ERROR(this->get_logger(), "Service %s not available!", client->get_service_name());
+            return;
+        }
+        auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+        client->async_send_request(request, [this, label](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+            try {
+                auto response = future.get();
+                if (response->success) {
+                    RCLCPP_INFO(this->get_logger(), "%s succeeded: %s", label.c_str(), response->message.c_str());
+                } else {
+                    RCLCPP_WARN(this->get_logger(), "%s failed: %s", label.c_str(), response->message.c_str());
+                }
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(this->get_logger(), "Service call %s failed: %s", label.c_str(), e.what());
+            }
+        });
     }
 
     // Parameters
@@ -251,6 +315,8 @@ private:
     bool return_to_origin_;
     double origin_x_;
     double origin_y_;
+    std::string stop_explore_srv_name_;
+    std::string start_explore_srv_name_;
 
     // ROS Comms
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
@@ -258,6 +324,8 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr explore_finished_sub_;
     rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
+    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr stop_explore_client_;
+    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr start_explore_client_;
     rclcpp::TimerBase::SharedPtr recovery_timer_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;

@@ -28,14 +28,14 @@ gp_predictor_node:
   ros__parameters:
     kernel:
       type: "Matern52"
-      lengthscale: 1.0 # Initial guess or fixed value
-    fix_lengthscale: False # Set to True for direct model comparison
-    fix_rho: False # Set to True to force rho to initial_rho
+      lengthscale: 2.0 # Fixed larger value for stability
+    fix_lengthscale: True # Fixed to prevent shimmering
+    fix_rho: True # Fixed to prevent field scaling jitter
     use_multi_fidelity: True
     initial_rho: 1.0
     low_fi_max_prior: 0.1 # Cap the low-fi model influence to prevent initial high predictions
     model_path: "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
-    sparse_threshold: 10
+    sparse_threshold: 300 # Increased for better accuracy before switching to sparse
 
 peak_finder_client_node:
   ros__parameters:

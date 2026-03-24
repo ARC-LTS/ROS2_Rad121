@@ -486,6 +486,10 @@ private:
                     }
                 }
 
+                // Final Smoothing Pass to fill small micro-gaps and soften edges
+                cv::GaussianBlur(hist_mean_occluded, hist_mean_occluded, cv::Size(3, 3), 0);
+                cv::GaussianBlur(hist_std_occluded, hist_std_occluded, cv::Size(3, 3), 0);
+
                 // Push local mask back to global persistent mask
                 {
                     std::lock_guard<std::mutex> lock(data_mutex_);

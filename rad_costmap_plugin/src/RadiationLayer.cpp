@@ -22,10 +22,15 @@ void RadiationLayer::onInitialize()
   declareParameter("heatmap_topic", rclcpp::ParameterValue("/rad_heatmap/raw_mean_map"));
   declareParameter("warning_threshold_mrem_hr", rclcpp::ParameterValue(0.25));
   declareParameter("evacuation_threshold_mrem_hr", rclcpp::ParameterValue(2.0));
+  declareParameter("max_radiation_cost", rclcpp::ParameterValue(250));
   
   node->get_parameter(name_ + "." + "heatmap_topic", heatmap_topic_);
   node->get_parameter(name_ + "." + "warning_threshold_mrem_hr", warning_threshold_);
   node->get_parameter(name_ + "." + "evacuation_threshold_mrem_hr", evacuation_threshold_);
+  
+  int max_cost_int;
+  node->get_parameter(name_ + "." + "max_radiation_cost", max_cost_int);
+  max_cost_ = static_cast<unsigned char>(max_cost_int);
 
   RCLCPP_INFO(node->get_logger(), "Radiation Layer: Subscribing to heatmap topic: %s", heatmap_topic_.c_str());
 
@@ -73,10 +78,15 @@ void RadiationLayer::updateBounds(
   // Update a limited area around the robot (e.g., 10m radius) instead of the entire map.
   // This drastically reduces computation in the updateCosts loop and fixes performance bottlenecks.
   double update_radius = 10.0;
-  *min_x = std::min(*min_x, robot_x - update_radius);
-  *min_y = std::min(*min_y, robot_y - update_radius);
-  *max_x = std::max(*max_x, robot_x + update_radius);
-  *max_y = std::max(*max_y, robot_y + update_radius);
+  double min_x_val = std::max(map_info_.origin.position.x, robot_x - update_radius);
+  double min_y_val = std::max(map_info_.origin.position.y, robot_y - update_radius);
+  double max_x_val = std::min(map_info_.origin.position.x + map_info_.width * map_info_.resolution, robot_x + update_radius);
+  double max_y_val = std::min(map_info_.origin.position.y + map_info_.height * map_info_.resolution, robot_y + update_radius);
+
+  *min_x = std::min(*min_x, min_x_val);
+  *min_y = std::min(*min_y, min_y_val);
+  *max_x = std::max(*max_x, max_x_val);
+  *max_y = std::max(*max_y, max_y_val);
 }
 
 void RadiationLayer::updateCosts(
@@ -132,25 +142,28 @@ void RadiationLayer::updateCosts(
                         dx * (1 - dy) * f21 +
                         dx * dy * f22;
 
+      int index = master_grid.getIndex(i, j);
+      unsigned char current_cost = master_array[index];
+
+      if (current_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
+        continue;
+      }
+
       if (radiation > warning_threshold_) {
-        int index = master_grid.getIndex(i, j);
-        unsigned char current_cost = master_array[index];
-
-        if (current_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
-          continue;
-        }
-
         unsigned char radiation_cost = 0;
         if (radiation >= evacuation_threshold_) {
-          // Use a high cost but not LETHAL to allow robot to move/recover
-          radiation_cost = 250; 
+          radiation_cost = max_cost_; 
         } else {
           double scale = (radiation - warning_threshold_) / (evacuation_threshold_ - warning_threshold_);
-          // Scale from 1 up to 249
-          radiation_cost = 1 + static_cast<unsigned char>(scale * 248.0);
+          // Scale from 1 up to max_cost_ - 1
+          radiation_cost = 1 + static_cast<unsigned char>(scale * (max_cost_ - 2));
         }
         
         master_array[index] = std::max(current_cost, radiation_cost);
+      } else if (radiation < 0) {
+        // Unknown radiation space: assign a neutral, non-blocking cost if desired,
+        // or just keep current cost. Logic control: "if unknown, it's not an obstacle".
+        // We do nothing, which keeps it traversable.
       }
     }
   }

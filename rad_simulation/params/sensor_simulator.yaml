@@ -19,6 +19,7 @@ rad_field_server:
     background_radiation_enabled: true
     background_radiation_min: 0.05
     background_radiation_max: 1.0
+    output_yaml_file: '/var/home/doobs/Dev/ARC/ros_ws/src/ROS2_Rad121/rad_simulation/params/saved_sources.yaml'
 
 battery_simulator:
   ros__parameters:
@@ -27,5 +28,5 @@ battery_simulator:
     capacity_ah: 20.0
     idle_current_amps: 1.25
     discharge_rate_per_meter: 0.0001
-    odom_topic: "/odometry"
+    odom_topic: "/odom"
     battery_topic: "/battery_state"
