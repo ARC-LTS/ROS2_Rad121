@@ -24,7 +24,8 @@ public:
           tf_buffer_(this->get_clock()),
           tf_listener_(tf_buffer_),
           is_recovering_(false),
-          exploration_finished_(false)
+          exploration_finished_(false),
+          consecutive_recovery_failures_(0)
     {
         // Parameters
         this->declare_parameter<double>("critical_dose_mrem_hr", 2.0);
@@ -117,16 +118,16 @@ private:
     void triggerRecovery()
     {
         auto now = this->get_clock()->now();
-        
-        // If already recovering and moving, don't preempt unless we've been stuck for a while (10s)
-        // or if we just started (is_recovering_ was false).
+
+        // Don't preempt an active recovery within the cooldown window
         if (is_recovering_ && (now - last_goal_time_).seconds() < 10.0) {
             return;
         }
 
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Critical radiation (%.2f)! Executing recovery.", current_rad_val_);
-        
-        // Stop exploration first to prevent fighting for goals
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+            "Critical radiation (%.2f)! Executing recovery (attempt #%d).",
+            current_rad_val_, consecutive_recovery_failures_ + 1);
+
         if (!is_recovering_) {
             callTriggerService(stop_explore_client_, "Stop Exploration");
         }
@@ -144,12 +145,19 @@ private:
         geometry_msgs::msg::Point escape_point;
         bool point_found = false;
 
-        if (return_to_origin_) {
+        // After 4 consecutive failures, override everything and go to origin —
+        // the robot is genuinely stuck and needs a guaranteed safe destination.
+        if (consecutive_recovery_failures_ >= 4) {
+            RCLCPP_WARN(this->get_logger(),
+                "4+ recovery failures. Forcing navigation to map origin as last resort.");
             escape_point.x = origin_x_;
             escape_point.y = origin_y_;
             escape_point.z = 0.0;
-            
-            // Validate origin against map bounds
+            point_found = true;
+        } else if (return_to_origin_) {
+            escape_point.x = origin_x_;
+            escape_point.y = origin_y_;
+            escape_point.z = 0.0;
             std::lock_guard<std::mutex> map_lock(map_mutex_);
             if (latest_costmap_) {
                 float res = latest_costmap_->info.resolution;
@@ -160,29 +168,81 @@ private:
                 int px = (escape_point.x - ox) / res;
                 int py = (escape_point.y - oy) / res;
                 if (px < 2 || px >= w - 2 || py < 2 || py >= h - 2) {
-                    RCLCPP_WARN(this->get_logger(), "Origin is out of map bounds! Falling back to safe point search.");
+                    RCLCPP_WARN(this->get_logger(), "Origin out of map bounds. Falling back to safe point search.");
                     return_to_origin_ = false;
-                    point_found = findSafePoint(current_pose.pose.position, escape_point);
+                    // Expand radius after failures to break out of local minima
+                    double search_radius = recovery_search_distance_ *
+                        (consecutive_recovery_failures_ >= 2 ? 1.5 : 1.0);
+                    point_found = findSafePoint(current_pose.pose.position, escape_point, search_radius);
                 } else {
                     point_found = true;
                     RCLCPP_INFO(this->get_logger(), "Evacuating to origin (%.2f, %.2f)", origin_x_, origin_y_);
                 }
             }
         } else {
-            point_found = findSafePoint(current_pose.pose.position, escape_point);
+            double search_radius = recovery_search_distance_ *
+                (consecutive_recovery_failures_ >= 2 ? 1.5 : 1.0);
+            if (consecutive_recovery_failures_ >= 2) {
+                RCLCPP_INFO(this->get_logger(),
+                    "Expanding search radius to %.1fm after %d failures.",
+                    search_radius, consecutive_recovery_failures_);
+            }
+            point_found = findSafePoint(current_pose.pose.position, escape_point, search_radius);
         }
 
         if (!point_found) {
-            // Fallback: Just move backwards relative to current orientation
+            // Improved fallback: sample 8 directions and pick the one with the
+            // lowest costmap cost that hasn't already been tried.
             tf2::Quaternion q;
             tf2::fromMsg(current_pose.pose.orientation, q);
             tf2::Matrix3x3 m(q);
             double roll, pitch, yaw;
             m.getRPY(roll, pitch, yaw);
-            escape_point.x = current_pose.pose.position.x - fallback_retreat_distance_ * cos(yaw);
-            escape_point.y = current_pose.pose.position.y - fallback_retreat_distance_ * sin(yaw);
-            RCLCPP_ERROR(this->get_logger(), "No safe point found! Performing emergency retreat.");
+
+            float best_cost = std::numeric_limits<float>::max();
+            bool directional_found = false;
+            {
+                std::lock_guard<std::mutex> map_lock(map_mutex_);
+                if (latest_costmap_) {
+                    float res = latest_costmap_->info.resolution;
+                    float ox = latest_costmap_->info.origin.position.x;
+                    float oy = latest_costmap_->info.origin.position.y;
+                    int w = latest_costmap_->info.width;
+                    int h = latest_costmap_->info.height;
+                    for (int i = 0; i < 8; ++i) {
+                        double angle = yaw + i * M_PI / 4.0;
+                        geometry_msgs::msg::Point candidate;
+                        candidate.x = current_pose.pose.position.x + fallback_retreat_distance_ * cos(angle);
+                        candidate.y = current_pose.pose.position.y + fallback_retreat_distance_ * sin(angle);
+                        int px = (candidate.x - ox) / res;
+                        int py = (candidate.y - oy) / res;
+                        if (px < 2 || px >= w - 2 || py < 2 || py >= h - 2) continue;
+                        unsigned char cost = latest_costmap_->data[py * w + px];
+                        if (cost >= 70) continue;
+                        // Skip if too close to a previously failed escape point
+                        bool near_failed = false;
+                        for (const auto& fe : failed_escape_points_) {
+                            double dx = candidate.x - fe.x, dy = candidate.y - fe.y;
+                            if (dx * dx + dy * dy < 4.0) { near_failed = true; break; }
+                        }
+                        if (!near_failed && static_cast<float>(cost) < best_cost) {
+                            best_cost = static_cast<float>(cost);
+                            escape_point = candidate;
+                            directional_found = true;
+                        }
+                    }
+                }
+            }
+            if (!directional_found) {
+                // Last resort: go straight backward
+                escape_point.x = current_pose.pose.position.x - fallback_retreat_distance_ * cos(yaw);
+                escape_point.y = current_pose.pose.position.y - fallback_retreat_distance_ * sin(yaw);
+            }
+            RCLCPP_ERROR(this->get_logger(), "No safe point found! Using %s fallback.",
+                directional_found ? "best-direction" : "backward");
         }
+
+        last_escape_attempt_ = escape_point;
 
         auto goal_msg = std::make_shared<NavigateToPose::Goal>();
         goal_msg->pose.header.frame_id = map_frame_;
@@ -193,14 +253,18 @@ private:
         auto send_goal_options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
         send_goal_options.result_callback =
             std::bind(&LocalRecoveryNode::recoveryResultCallback, this, std::placeholders::_1);
-        
+
         nav_action_client_->async_send_goal(*goal_msg, send_goal_options);
         last_goal_time_ = now;
         is_recovering_ = true;
     }
     
-    bool findSafePoint(const geometry_msgs::msg::Point& robot_pos, geometry_msgs::msg::Point& safe_point)
+    bool findSafePoint(const geometry_msgs::msg::Point& robot_pos,
+                       geometry_msgs::msg::Point& safe_point,
+                       double search_radius = -1.0)
     {
+        if (search_radius < 0.0) search_radius = recovery_search_distance_;
+
         nav_msgs::msg::OccupancyGrid::SharedPtr costmap;
         sensor_msgs::msg::Image::SharedPtr heatmap;
         {
@@ -224,7 +288,7 @@ private:
 
         int robot_px = (robot_pos.x - origin_x) / res;
         int robot_py = (robot_pos.y - origin_y) / res;
-        int max_search_px = recovery_search_distance_ / res;
+        int max_search_px = search_radius / res;
 
         float best_utility = -std::numeric_limits<float>::max();
         bool found = false;
@@ -247,23 +311,33 @@ private:
                 // Check if navigable (cost < 70 avoids inflation from walls better)
                 if (cost >= 0 && cost < 70) {
                     float rad = cv_ptr->image.at<float>(py, px);
-                    
-                    // Utility = -Radiation + Normalized_Distance - Normalized_Cost
-                    // We want low radiation, reasonable distance, and LOW cost (far from obstacles)
                     float dist_m = r * res;
-                    float utility = -rad * 10.0f + 
-                                    (dist_m / recovery_search_distance_) - 
+
+                    geometry_msgs::msg::Point candidate;
+                    candidate.x = origin_x + (px + 0.5) * res;
+                    candidate.y = origin_y + (py + 0.5) * res;
+
+                    // Skip points too close to previously failed escape destinations
+                    bool near_failed = false;
+                    for (const auto& fe : failed_escape_points_) {
+                        double dx = candidate.x - fe.x, dy = candidate.y - fe.y;
+                        if (dx * dx + dy * dy < 4.0) { near_failed = true; break; }
+                    }
+                    if (near_failed) continue;
+
+                    // Utility = -Radiation + Normalized_Distance - Normalized_Cost
+                    float utility = -rad * 10.0f +
+                                    (dist_m / search_radius) -
                                     (static_cast<float>(cost) / 50.0f);
 
                     if (utility > best_utility) {
                         best_utility = utility;
-                        safe_point.x = origin_x + (px + 0.5) * res;
-                        safe_point.y = origin_y + (py + 0.5) * res;
+                        safe_point = candidate;
                         safe_point.z = 0;
                         found = true;
                     }
-                    
-                    // If we found a genuinely safe point that is also reasonably far, we can stop early
+
+                    // Early exit: genuinely safe and far enough away
                     if (rad < safe_dose_threshold_ && dist_m > 5.0) {
                         return true;
                     }
@@ -275,12 +349,20 @@ private:
 
     void recoveryResultCallback(const GoalHandleNavigateToPose::WrappedResult & result)
     {
-        is_recovering_ = false; // Reset to allow subsequent recovery attempts
+        is_recovering_ = false;
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
             RCLCPP_INFO(this->get_logger(), "Successfully reached safe zone. Resuming exploration.");
+            consecutive_recovery_failures_ = 0;
+            failed_escape_points_.clear();
             callTriggerService(start_explore_client_, "Start Exploration");
         } else {
-            RCLCPP_WARN(this->get_logger(), "Recovery navigation failed (code %d). Will retry if radiation remains critical.", static_cast<int>(result.code));
+            consecutive_recovery_failures_++;
+            failed_escape_points_.push_back(last_escape_attempt_);
+            RCLCPP_WARN(this->get_logger(),
+                "Recovery navigation failed (code %d, attempt #%d). "
+                "Blacklisting escape point (%.2f, %.2f). Will retry.",
+                static_cast<int>(result.code), consecutive_recovery_failures_,
+                last_escape_attempt_.x, last_escape_attempt_.y);
         }
     }
 
@@ -339,6 +421,10 @@ private:
     sensor_msgs::msg::Image::SharedPtr latest_heatmap_;
     std::mutex map_mutex_;
     std::mutex heatmap_mutex_;
+    // Recovery escalation tracking
+    int consecutive_recovery_failures_;
+    std::vector<geometry_msgs::msg::Point> failed_escape_points_;
+    geometry_msgs::msg::Point last_escape_attempt_;
 };
 
 int main(int argc, char *argv[])

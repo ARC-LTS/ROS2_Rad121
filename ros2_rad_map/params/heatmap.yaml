@@ -34,7 +34,7 @@ gp_predictor_node:
     use_multi_fidelity: True
     initial_rho: 1.0
     low_fi_max_prior: 0.1 # Cap the low-fi model influence to prevent initial high predictions
-    model_path: "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
+    model_path: "/var/home/doobs/Dev/ARC/ros_ws/src/ROS2_Rad121/ros2_rad_map/models/gp_model.pkl"
     sparse_threshold: 300 # Increased for better accuracy before switching to sparse
 
 peak_finder_client_node:
@@ -51,5 +51,5 @@ rad_costmap_visualizer_node:
   ros__parameters:
     heatmap_topic: "/rad_heatmap/raw_mean_map"
     map_topic: "/map"
-    warning_threshold_mrem_hr: 0.5
-    evacuation_threshold_mrem_hr: 5.0
+    warning_threshold_mrem_hr: 1.0
+    evacuation_threshold_mrem_hr: 2.0
