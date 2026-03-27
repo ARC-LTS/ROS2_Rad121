@@ -7,6 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -29,6 +30,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_executable(rad_field_server src/rad_field_server.cpp)
 ament_target_dependencies(rad_field_server
+  ament_index_cpp
   rclcpp
   std_srvs
   geometry_msgs
@@ -45,6 +47,7 @@ find_package(yaml-cpp REQUIRED)
 
 add_executable(source_selector_node src/source_selector_node.cpp)
 ament_target_dependencies(source_selector_node
+  ament_index_cpp
   rclcpp
   geometry_msgs
   std_srvs

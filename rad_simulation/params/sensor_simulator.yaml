@@ -19,7 +19,7 @@ rad_field_server:
     background_radiation_enabled: true
     background_radiation_min: 0.05
     background_radiation_max: 1.0
-    output_yaml_file: '/var/home/doobs/Dev/ARC/ros_ws/src/ROS2_Rad121/rad_simulation/params/saved_sources.yaml'
+    # output_yaml_file: default is resolved at runtime via ament_index to <rad_simulation share>/params/saved_sources.yaml
 
 battery_simulator:
   ros__parameters:

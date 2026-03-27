@@ -1,3 +1,4 @@
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "geometry_msgs/msg/point.hpp"
@@ -56,7 +57,8 @@ public:
         this->declare_parameter<bool>("background_radiation_enabled", false);
         this->declare_parameter<double>("background_radiation_min", 0.05);
         this->declare_parameter<double>("background_radiation_max", 1.0);
-        this->declare_parameter<std::string>("output_yaml_file", "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/rad_simulation/params/saved_sources.yaml");
+        this->declare_parameter<std::string>("output_yaml_file",
+            ament_index_cpp::get_package_share_directory("rad_simulation") + "/params/saved_sources.yaml");
 
         map_frame_ = this->get_parameter("map_frame").as_string();
         robot_frame_ = this->get_parameter("robot_frame").as_string();

@@ -7,7 +7,7 @@ rad_pointcloud_node:
     source_estimate_topic: "/rad_source_estimate"
     sensor_frame: "base_link"             
     map_frame: "map"                      
-    save_ply_directory: "/home/brendoncintas/radmon_ws/"
+    # save_ply_directory: ""  # Defaults to /tmp; override via launch argument to set a persistent output path
     save_ply_base_name: "rad_cloud"
     attenuation_coefficient_cm: 0.00012   
     min_cpm_threshold: 300.0             

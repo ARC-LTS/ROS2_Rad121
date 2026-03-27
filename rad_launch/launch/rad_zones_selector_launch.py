@@ -10,12 +10,18 @@ def generate_launch_description():
         'zones.yaml'
     )
 
+    output_yaml_file = os.path.join(
+        get_package_share_directory('rad121_monitor'),
+        'params',
+        'predefined_zones.yaml'
+    )
+
     return LaunchDescription([
         Node(
             package='ros2_rad_map',
             executable='zone_selector_node',
             name='zone_selector_node',
-            parameters=[param_file],
+            parameters=[param_file, {'output_yaml_file': output_yaml_file}],
             output='screen'
         )
     ])

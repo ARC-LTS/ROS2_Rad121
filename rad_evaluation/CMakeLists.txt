@@ -7,6 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -20,6 +21,7 @@ find_package(std_srvs REQUIRED)
 
 add_executable(rad_evaluator_node src/rad_evaluator_node.cpp)
 ament_target_dependencies(rad_evaluator_node
+  ament_index_cpp
   rclcpp
   std_msgs
   geometry_msgs

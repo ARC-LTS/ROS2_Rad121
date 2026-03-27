@@ -1,3 +1,4 @@
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "rad_simulation/srv/spawn_source.hpp"
@@ -18,7 +19,8 @@ public:
     SourceSelectorNode() : Node("source_selector_node")
     {
         this->declare_parameter<std::string>("clicked_point_topic", "/clicked_point");
-        this->declare_parameter<std::string>("output_yaml_file", "/home/brendoncintas/radmon_ws/src/ROS2_Rad121/rad_simulation/params/manual_sources.yaml");
+        this->declare_parameter<std::string>("output_yaml_file",
+            ament_index_cpp::get_package_share_directory("rad_simulation") + "/params/manual_sources.yaml");
         this->declare_parameter<double>("default_intensity", 5.0);
 
         std::string clicked_point_topic = this->get_parameter("clicked_point_topic").as_string();

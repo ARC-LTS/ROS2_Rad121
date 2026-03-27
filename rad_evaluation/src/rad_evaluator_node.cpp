@@ -1,3 +1,4 @@
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
@@ -31,7 +32,8 @@ public:
         this->declare_parameter<std::string>("map_frame", "map");
         this->declare_parameter<std::string>("robot_frame", "base_link");
         this->declare_parameter<double>("critical_dose_mrem_hr", 2.0);
-        this->declare_parameter<std::string>("output_dir", "/home/brendoncintas/radmon_ws/data/eval_reports");
+        this->declare_parameter<std::string>("output_dir",
+            ament_index_cpp::get_package_share_directory("rad_evaluation") + "/eval_reports");
         this->declare_parameter<std::string>("test_case_name", "unnamed_trial");
 
         map_frame_ = this->get_parameter("map_frame").as_string();
