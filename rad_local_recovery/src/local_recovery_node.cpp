@@ -244,13 +244,28 @@ private:
 
         last_escape_attempt_ = escape_point;
 
+        // Orient toward the escape point so the robot faces its destination
+        // and doesn't need to spin at the goal.
+        double escape_yaw = atan2(escape_point.y - current_pose.pose.position.y,
+                                   escape_point.x - current_pose.pose.position.x);
+        tf2::Quaternion escape_q;
+        escape_q.setRPY(0.0, 0.0, escape_yaw);
+        escape_q.normalize();
+
         auto goal_msg = std::make_shared<NavigateToPose::Goal>();
         goal_msg->pose.header.frame_id = map_frame_;
         goal_msg->pose.header.stamp = now;
         goal_msg->pose.pose.position = escape_point;
-        goal_msg->pose.pose.orientation = current_pose.pose.orientation;
+        goal_msg->pose.pose.orientation = tf2::toMsg(escape_q);
 
         auto send_goal_options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+        send_goal_options.goal_response_callback =
+            [this](const GoalHandleNavigateToPose::SharedPtr &handle) {
+                if (!handle) {
+                    RCLCPP_WARN(this->get_logger(), "Recovery goal rejected by Nav2. Will retry.");
+                    is_recovering_ = false;
+                }
+            };
         send_goal_options.result_callback =
             std::bind(&LocalRecoveryNode::recoveryResultCallback, this, std::placeholders::_1);
 
@@ -268,8 +283,7 @@ private:
         nav_msgs::msg::OccupancyGrid::SharedPtr costmap;
         sensor_msgs::msg::Image::SharedPtr heatmap;
         {
-            std::lock_guard<std::mutex> map_lock(map_mutex_);
-            std::lock_guard<std::mutex> heatmap_lock(heatmap_mutex_);
+            std::scoped_lock lock(map_mutex_, heatmap_mutex_);
             if (!latest_costmap_ || !latest_heatmap_) return false;
             costmap = latest_costmap_;
             heatmap = latest_heatmap_;
@@ -310,7 +324,9 @@ private:
                 unsigned char cost = costmap->data[map_idx];
                 // Check if navigable (cost < 70 avoids inflation from walls better)
                 if (cost >= 0 && cost < 70) {
-                    float rad = cv_ptr->image.at<float>(py, px);
+                    // Guard against heatmap/costmap dimension mismatch
+                    float rad = (px < cv_ptr->image.cols && py < cv_ptr->image.rows)
+                                ? cv_ptr->image.at<float>(py, px) : 0.0f;
                     float dist_m = r * res;
 
                     geometry_msgs::msg::Point candidate;
