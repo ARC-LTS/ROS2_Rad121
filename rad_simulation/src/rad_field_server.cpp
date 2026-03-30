@@ -441,6 +441,8 @@ private:
         marker_array.markers.push_back(clear_marker);
 
         if (this->get_parameter("enable_sources").as_bool()) {
+            double high_thresh = this->get_parameter("high_intensity_threshold").as_double();
+            double low_min = this->get_parameter("low_intensity_min").as_double();
             for (const auto &source : sources_)
             {
                 visualization_msgs::msg::Marker marker;
@@ -453,8 +455,6 @@ private:
                 marker.pose.position = source.position;
                 marker.pose.orientation.w = 1.0;
 
-                double high_thresh = this->get_parameter("high_intensity_threshold").as_double();
-                double low_min = this->get_parameter("low_intensity_min").as_double();
                 double normalized_intensity = (source.intensity - low_min) / (high_thresh - low_min);
                 normalized_intensity = std::max(0.0, std::min(1.0, normalized_intensity));
 

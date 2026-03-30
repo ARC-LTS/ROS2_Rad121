@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <cmath>
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 
 // Struct to hold information about a single radiation source
 struct RadSource
@@ -42,8 +43,27 @@ public:
         robot_frame_ = this->get_parameter("robot_frame").as_string();
         double publish_rate = this->get_parameter("publish_rate_hz").as_double();
         double min_sensing_distance = this->get_parameter("min_sensing_distance_m").as_double();
-        min_distance_sq_ = min_sensing_distance * min_distance_sq_ / (min_sensing_distance != 0 ? 1.0 : 1.0); // Resetting logic
         min_distance_sq_ = min_sensing_distance * min_sensing_distance;
+
+        // Cache background parameters to avoid get_parameter() calls in the 10 Hz hot path
+        bg_enabled_ = this->get_parameter("background_radiation_enabled").as_bool();
+        bg_min_ = this->get_parameter("background_radiation_min").as_double();
+        bg_max_ = this->get_parameter("background_radiation_max").as_double();
+
+        param_cb_handle_ = this->add_on_set_parameters_callback(
+            [this](const std::vector<rclcpp::Parameter> & params) {
+                for (const auto & p : params) {
+                    if (p.get_name() == "background_radiation_enabled")
+                        bg_enabled_ = p.as_bool();
+                    else if (p.get_name() == "background_radiation_min")
+                        bg_min_ = p.as_double();
+                    else if (p.get_name() == "background_radiation_max")
+                        bg_max_ = p.as_double();
+                }
+                rcl_interfaces::msg::SetParametersResult r;
+                r.successful = true;
+                return r;
+            });
 
 
         // Subscription to the raw source data from the field server
@@ -70,26 +90,23 @@ public:
 private:
     double get_spatial_background(double x, double y)
     {
-        if (!this->get_parameter("background_radiation_enabled").as_bool()) {
+        if (!bg_enabled_) {
             return 0.0;
         }
-
-        double bg_min = this->get_parameter("background_radiation_min").as_double();
-        double bg_max = this->get_parameter("background_radiation_max").as_double();
 
         // Spatial noise function to simulate "infinite number of fixed point sources".
         // Deterministic based on coordinates (no temporal noise).
         // Using a multi-scale sine sum to create a natural-looking background field.
-        double val = std::sin(x * 0.43) * std::cos(y * 0.37) + 
+        double val = std::sin(x * 0.43) * std::cos(y * 0.37) +
                      std::sin(x * 1.21 + 0.5) * std::sin(y * 1.33 + 1.2) +
                      std::cos(x * 2.87 + 2.1) * std::sin(y * 3.11 + 0.8) +
                      std::sin(x * 5.71 + 3.4) * std::cos(y * 6.23 + 4.1);
-        
+
         // val is in roughly [-4, 4]. Normalize to [0, 1]
         double normalized = (val + 4.0) / 8.0;
         normalized = std::max(0.0, std::min(1.0, normalized));
-        
-        return bg_min + normalized * (bg_max - bg_min);
+
+        return bg_min_ + normalized * (bg_max_ - bg_min_);
     }
 
     void background_callback(const std_msgs::msg::Float64::SharedPtr msg)
@@ -180,6 +197,12 @@ private:
     double background_radiation_;
     std::mutex source_mutex_;
     double min_distance_sq_;
+
+    // Cached background parameters (updated via parameter callback)
+    bool bg_enabled_;
+    double bg_min_;
+    double bg_max_;
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
 
 int main(int argc, char **argv)
