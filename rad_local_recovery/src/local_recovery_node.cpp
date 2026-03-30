@@ -12,6 +12,8 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <mutex>
+#include <deque>
+#include <numeric>
 
 class LocalRecoveryNode : public rclcpp::Node
 {
@@ -28,6 +30,7 @@ public:
           consecutive_recovery_failures_(0)
     {
         // Parameters
+        this->declare_parameter<int>("dose_confirmation_count", 3);
         this->declare_parameter<double>("critical_dose_mrem_hr", 2.0);
         this->declare_parameter<double>("safe_dose_threshold_mrem_hr", 0.25);
         this->declare_parameter<double>("recovery_search_distance_m", 15.0); // Increased radius
@@ -40,6 +43,7 @@ public:
         this->declare_parameter<std::string>("stop_explore_service", "/explore_node/stop");
         this->declare_parameter<std::string>("start_explore_service", "/explore_node/start");
 
+        dose_confirmation_count_ = this->get_parameter("dose_confirmation_count").as_int();
         critical_dose_ = this->get_parameter("critical_dose_mrem_hr").as_double();
         safe_dose_threshold_ = this->get_parameter("safe_dose_threshold_mrem_hr").as_double();
         recovery_search_distance_ = this->get_parameter("recovery_search_distance_m").as_double();
@@ -91,13 +95,19 @@ private:
     void radCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
     {
         if (msg->data.size() < 2) return;
-        current_rad_val_ = msg->data[1];
+        dose_history_.push_back(msg->data[1]);
+        if (static_cast<int>(dose_history_.size()) > dose_confirmation_count_) {
+            dose_history_.pop_front();
+        }
+        // Rolling average — smooths transient spikes before recovery is considered
+        current_rad_val_ = std::accumulate(dose_history_.begin(), dose_history_.end(), 0.0)
+                           / static_cast<double>(dose_history_.size());
     }
 
     void recoveryTick()
     {
         if (exploration_finished_) return;
-        
+
         if (current_rad_val_ > critical_dose_) {
             triggerRecovery();
         }
@@ -430,6 +440,8 @@ private:
     
     // State
     double current_rad_val_ = 0.0;
+    std::deque<double> dose_history_;
+    int dose_confirmation_count_;
     bool is_recovering_ = false;
     bool exploration_finished_ = false;
     rclcpp::Time last_goal_time_{0, 0, RCL_ROS_TIME};
