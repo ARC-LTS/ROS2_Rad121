@@ -54,7 +54,10 @@ class GPPredictor(Node):
         self.declare_parameter('landmark_buffer_size', 500)
         self.declare_parameter('landmark_spatial_dist', 0.2)
         self.declare_parameter('peak_confidence_threshold', 1.0) # Max allowed std dev
-        
+        self.declare_parameter('rad_smoothing_window', 5)        # Rolling average before training
+        self.declare_parameter('gp_noise_variance_min', 0.5)     # Floor on GP likelihood variance
+        self.declare_parameter('landmark_background_min', 0.3)   # Min background used for landmark threshold
+
         self.predict_srv = self.create_service(GPPredict, 'predict_gp', self.predict_callback)
         self.peaks_srv = self.create_service(FindPeaks, 'find_rad_peaks', self.find_peaks_callback)
         
@@ -67,6 +70,7 @@ class GPPredictor(Node):
         self.gp_model = None
         self.data_lock = threading.Lock()
         self.current_background = 0.0
+        self._rad_smooth_buf = []   # Rolling window for pre-smoothing raw readings
         
         # Multi-fidelity state
         self.gp_lo = None
@@ -128,10 +132,18 @@ class GPPredictor(Node):
             map_frame = self.get_parameter('map_frame').get_parameter_value().string_value
 
             transform = self.tf_buffer.lookup_transform(map_frame, sensor_frame, rclpy.time.Time(), rclpy.duration.Duration(seconds=0.1))
-            
+
             x = transform.transform.translation.x
             y = transform.transform.translation.y
-            rad_value = msg.data[1]
+            raw_value = msg.data[1]
+
+            # Rolling average to suppress transient Geiger-counter spikes before
+            # they reach GP training data or landmark storage.
+            win_size = self.get_parameter('rad_smoothing_window').get_parameter_value().integer_value
+            self._rad_smooth_buf.append(raw_value)
+            if len(self._rad_smooth_buf) > win_size:
+                self._rad_smooth_buf.pop(0)
+            rad_value = sum(self._rad_smooth_buf) / len(self._rad_smooth_buf)
 
             with self.data_lock:
                 # Spatial downsampling for regular buffer
@@ -140,29 +152,36 @@ class GPPredictor(Node):
                     if dist_sq < 0.04: # 0.2m move required
                         return
 
+                # Use a copy for historical_samples so landmarks can be updated
+                # independently without aliasing mutations back into history.
                 sample = {'x': x, 'y': y, 'value': rad_value}
                 self.historical_samples.append(sample)
                 self.last_sample_pos = (x, y)
-                
-                # Landmark logic: Keep high values that are spatially distinct
-                # Only consider if significantly above background
-                if rad_value > (self.current_background * 1.5):
+
+                # Landmark logic: Keep representative values for high-radiation locations.
+                # Use a minimum background floor so we don't landmark every reading
+                # when the background topic hasn't published yet.
+                bg_min = self.get_parameter('landmark_background_min').get_parameter_value().double_value
+                effective_bg = max(self.current_background, bg_min)
+                if rad_value > effective_bg * 1.5:
                     is_far_from_existing = True
                     ls_min_dist_sq = (self.get_parameter('landmark_spatial_dist').get_parameter_value().double_value)**2
-                    
+
                     for ls in self.landmark_samples:
                         ls_dist_sq = (x - ls['x'])**2 + (y - ls['y'])**2
                         if ls_dist_sq < ls_min_dist_sq:
-                            # If we are close to an existing landmark, replace it only if this value is higher
-                            if rad_value > ls['value']:
-                                ls['value'] = rad_value
-                                ls['x'] = x
-                                ls['y'] = y
+                            # Running average instead of ratchet-up: prevents a single
+                            # transient spike from permanently inflating the landmark value.
+                            ls['value'] = (ls['value'] + rad_value) / 2.0
+                            ls['x'] = (ls['x'] + x) / 2.0
+                            ls['y'] = (ls['y'] + y) / 2.0
                             is_far_from_existing = False
                             break
-                    
+
                     if is_far_from_existing:
-                        self.landmark_samples.append(sample)
+                        # Store a separate copy so mutations to the landmark dict
+                        # don't alias back and corrupt the historical_samples entry.
+                        self.landmark_samples.append({'x': x, 'y': y, 'value': rad_value})
                         # Cap landmark buffer by keeping highest values
                         if len(self.landmark_samples) > self.get_parameter('landmark_buffer_size').get_parameter_value().integer_value:
                             self.landmark_samples.sort(key=lambda s: s['value'], reverse=True)
@@ -237,6 +256,12 @@ class GPPredictor(Node):
         else:
             gp_model = GPy.models.GPRegression(training_points, training_values, kernel, mean_function=mf, normalizer=False)
         
+        # Enforce a noise variance floor so optimize() cannot collapse noise to near-zero
+        # and interpolate exactly through spike values.
+        noise_min = self.get_parameter('gp_noise_variance_min').get_parameter_value().double_value
+        if noise_min > 0.0:
+            gp_model.likelihood.variance.constrain_bounded(noise_min, 1e4)
+
         # Apply Fixed Lengthscale if requested
         if self.get_parameter('fix_lengthscale').get_parameter_value().bool_value:
             gp_model.kern.lengthscale.fix()
