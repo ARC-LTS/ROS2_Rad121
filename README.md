@@ -47,19 +47,30 @@ The system features an **Autoregressive Gaussian Process (ARGP)** node that mana
 
 ## 🛠️ Installation
 
-1.  **Clone the repository** into your ROS 2 workspace:
+1.  **Install vcstool** if not already present:
     ```bash
-    mkdir -p /ros_ws/src && cd ~/ros_ws/src
+    sudo apt install python3-vcstool
+    ```
+
+2.  **Clone the repository** into your ROS 2 workspace:
+    ```bash
+    mkdir -p ~/ros_ws/src && cd ~/ros_ws/src
     git clone https://git.turingnet.work/doobs/ROS2_Rad121.git
     ```
 
-2.  **Install dependencies**:
+3.  **Pull required source dependencies** (including `explore-ros2`):
     ```bash
-    cd ~/your_ws
+    vcs import --input ROS2_Rad121/radmon.repos
+    ```
+    This clones all declared source dependencies (e.g. `explore-ros2`) into the workspace alongside `ROS2_Rad121`.
+
+4.  **Install ROS dependencies**:
+    ```bash
+    cd ~/ros_ws
     rosdep install --from-paths src --ignore-src -r -y
     ```
 
-3.  **Build and source the workspace**:
+5.  **Build and source the workspace**:
     ```bash
     colcon build
     source ~/ros_ws/install/setup.bash
