@@ -1,0 +1,5 @@
+repositories:
+  explore-ros2:
+    type: git
+    url: https://git.turingnet.work/lts/explore-ros2
+    version: humble
