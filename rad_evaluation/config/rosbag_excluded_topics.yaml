@@ -1,0 +1,23 @@
+excluded_topics:
+#  - /camera/back/camera_info
+#  - /camera/back/image
+#  - /camera/frontleft/camera_info
+#  - /camera/frontleft/image
+#  - /camera/frontright/camera_info
+#  - /camera/frontright/image
+#  - /camera/left/camera_info
+#  - /camera/left/image
+#  - /camera/right/camera_info
+#  - /camera/right/image
+#  - /depth/back/camera_info
+#  - /depth/back/image
+#  - /depth/frontleft/camera_info
+#  - /depth/frontleft/image
+#  - /depth/frontright/camera_info
+#  - /depth/frontright/image
+#  - /depth/left/camera_info
+#  - /depth/left/image
+#  - /depth/right/camera_info
+#  - /depth/right/image
+#  - /depth_registered/frontleft/image
+#  - /depth_registered/image_rect/compressed
