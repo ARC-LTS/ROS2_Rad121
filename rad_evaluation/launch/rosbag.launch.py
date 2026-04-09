@@ -1,9 +1,9 @@
 import os
 import yaml
 import subprocess
-import launch_ros
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess
+from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 def get_excluded_topics():
@@ -54,9 +54,16 @@ def generate_launch_description():
         print("No topics available to record.")
         return LaunchDescription()
 
-    return LaunchDescription([
-        ExecuteProcess(
-            cmd=["ros2", "bag", "record"] + topics_to_record,
-            output="screen"
-        )
-    ])
+    stopper = Node(
+        package='rad_evaluation',
+        executable='rosbag_stopper.py',
+        name='rosbag_stopper',
+        output='screen',
+    )
+
+    recorder = ExecuteProcess(
+        cmd=["ros2", "bag", "record", "--compression-mode", "file", "--compression-format", "zstd"] + topics_to_record,
+        output="screen",
+    )
+
+    return LaunchDescription([stopper, recorder])

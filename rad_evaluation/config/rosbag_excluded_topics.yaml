@@ -1,23 +1,101 @@
 excluded_topics:
-#  - /camera/back/camera_info
-#  - /camera/back/image
-#  - /camera/frontleft/camera_info
-#  - /camera/frontleft/image
-#  - /camera/frontright/camera_info
-#  - /camera/frontright/image
-#  - /camera/left/camera_info
-#  - /camera/left/image
-#  - /camera/right/camera_info
-#  - /camera/right/image
-#  - /depth/back/camera_info
-#  - /depth/back/image
-#  - /depth/frontleft/camera_info
-#  - /depth/frontleft/image
-#  - /depth/frontright/camera_info
-#  - /depth/frontright/image
-#  - /depth/left/camera_info
-#  - /depth/left/image
-#  - /depth/right/camera_info
-#  - /depth/right/image
-#  - /depth_registered/frontleft/image
-#  - /depth_registered/image_rect/compressed
+  # --- Camera sensor data ---
+  - /sensors/camera_0/color/image
+  - /sensors/camera_0/color/camera_info
+  - /sensors/camera_0/depth/image
+  - /sensors/camera_0/depth/camera_info
+  - /sensors/camera_0/points
+
+  # --- LiDAR sensor data ---
+  - /sensors/lidar2d_0/scan
+  - /sensors/lidar3d_0/scan
+  - /sensors/lidar3d_0/points
+
+  # --- RTAB-Map internal data (large, reconstructible) ---
+  - /odom_rgbd_image
+  - /odom_sensor_data/raw
+  - /odom_sensor_data/features
+  - /odom_local_map
+  - /odom_local_scan_map
+  - /odom_filtered_input_scan
+  - /odom_info
+  - /odom_info_lite
+  - /odom_last_frame
+  - /mapData
+  - /mapGraph
+  - /mapPath
+  - /mapOdomCache
+  - /info
+  - /landmarks
+  - /labels
+  - /grid_prob_map
+
+  # --- Octomap / point cloud outputs (large 3D volumetric data, derived) ---
+  - /octomap_binary
+  - /octomap_full
+  - /octomap_grid
+  - /octomap_ground
+  - /octomap_empty_space
+  - /octomap_obstacles
+  - /octomap_occupied_space
+  - /octomap_global_frontier_space
+  - /cloud_ground
+  - /cloud_obstacles
+  - /cloud_map
+  - /cost_cloud
+  - /local_grid_obstacle
+  - /local_grid_empty
+  - /local_grid_ground
+
+  # --- Derived radiation heatmaps (recomputable from /rad) ---
+  - /rad_heatmap/gp_mean_map
+  - /rad_heatmap/gp_std_dev
+  - /rad_heatmap/historical_mean
+  - /rad_heatmap/historical_mean_overlay
+  - /rad_heatmap/historical_std_dev
+  - /rad_heatmap/raw_mean_map
+  - /radiation_zone_markers
+
+  # --- Costmap raw streams (costmap outputs are kept, raws are not needed) ---
+  - /local_costmap/costmap_raw
+  - /global_costmap/costmap_raw
+
+  # --- Redundant navigation plan topics ---
+  - /plan_smoothed
+  - /received_global_plan
+  - /transformed_global_plan
+  - /global_path_nodes
+  - /local_path_nodes
+
+  # --- Exploration derived data ---
+  - /explore/explored_area
+  - /explore/frontiers
+
+  # --- Visualization / interaction only ---
+  - /marker
+  - /twist_marker_server/cmd_vel
+  - /twist_marker_server/update
+  - /initialpose
+  - /clicked_point
+  - /robot_description
+
+  # --- Teleoperation ---
+  - /joy_teleop/cmd_vel
+  - /joy_teleop/joy
+
+  # --- ROS internal / lifecycle transition events ---
+  - /bond
+  - /parameter_events
+  - /rosout
+  - /behavior_tree_log
+  - /bt_navigator/transition_event
+  - /smoother_server/transition_event
+  - /velocity_smoother/transition_event
+  - /waypoint_follower/transition_event
+  - /controller_server/transition_event
+  - /behavior_server/transition_event
+  - /planner_server/transition_event
+  - /joint_state_broadcaster/transition_event
+  - /platform_velocity_controller/transition_event
+  - /local_costmap/local_costmap/transition_event
+  - /global_costmap/global_costmap/transition_event
