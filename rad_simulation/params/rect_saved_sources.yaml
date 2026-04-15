@@ -1,0 +1,16 @@
+rad_field_server:
+  ros__parameters:
+    known_sources:
+      - 3.370
+      - -4.03
+      - 5
+
+      # source #2
+      - 7.25
+      - 0.5
+      - 2.5
+
+      # source #3
+      - 9.0
+      - -3.75
+      - 7.50

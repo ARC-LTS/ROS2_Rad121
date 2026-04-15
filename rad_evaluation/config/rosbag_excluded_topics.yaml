@@ -1,19 +1,20 @@
 excluded_topics:
-  # --- Camera sensor data ---
+  # --- Camera sensor data (raw, large) ---
   - /sensors/camera_0/color/image
   - /sensors/camera_0/color/camera_info
   - /sensors/camera_0/depth/image
   - /sensors/camera_0/depth/camera_info
   - /sensors/camera_0/points
 
-  # --- LiDAR sensor data ---
+  # --- LiDAR sensor data (raw, large) ---
   - /sensors/lidar2d_0/scan
   - /sensors/lidar3d_0/scan
   - /sensors/lidar3d_0/points
 
-  # --- RTAB-Map internal data (large, reconstructible) ---
+  # --- RTAB-Map internal data (large, reconstructible from /map + /odom) ---
   - /odom_rgbd_image
   - /odom_sensor_data/raw
+  - /odom_sensor_data/compressed
   - /odom_sensor_data/features
   - /odom_local_map
   - /odom_local_scan_map
@@ -30,7 +31,7 @@ excluded_topics:
   - /labels
   - /grid_prob_map
 
-  # --- Octomap / point cloud outputs (large 3D volumetric data, derived) ---
+  # --- Octomap / 3D point cloud outputs (large 3D volumetric data, derived) ---
   - /octomap_binary
   - /octomap_full
   - /octomap_grid
@@ -47,34 +48,22 @@ excluded_topics:
   - /local_grid_empty
   - /local_grid_ground
 
-  # --- Derived radiation heatmaps (recomputable from /rad) ---
-  - /rad_heatmap/gp_mean_map
-  - /rad_heatmap/gp_std_dev
-  - /rad_heatmap/historical_mean
-  - /rad_heatmap/historical_mean_overlay
-  - /rad_heatmap/historical_std_dev
-  - /rad_heatmap/raw_mean_map
-  - /radiation_zone_markers
-
-  # --- Costmap raw streams (costmap outputs are kept, raws are not needed) ---
+  # --- Costmap raw streams (nav2_msgs/Costmap internal format, redundant with /costmap topics) ---
   - /local_costmap/costmap_raw
   - /global_costmap/costmap_raw
 
-  # --- Redundant navigation plan topics ---
+  # --- Redundant navigation plan topics (keep /plan; drop derived/transformed copies) ---
   - /plan_smoothed
   - /received_global_plan
   - /transformed_global_plan
   - /global_path_nodes
   - /local_path_nodes
 
-  # --- Exploration derived data ---
-  - /explore/explored_area
-  - /explore/frontiers
-
   # --- Visualization / interaction only ---
   - /marker
   - /twist_marker_server/cmd_vel
   - /twist_marker_server/update
+  - /twist_marker_server/feedback
   - /initialpose
   - /clicked_point
   - /robot_description
@@ -82,6 +71,8 @@ excluded_topics:
   # --- Teleoperation ---
   - /joy_teleop/cmd_vel
   - /joy_teleop/joy
+  - /joy_teleop/joy/set_feedback
+  - /rc_teleop/cmd_vel
 
   # --- ROS internal / lifecycle transition events ---
   - /bond
