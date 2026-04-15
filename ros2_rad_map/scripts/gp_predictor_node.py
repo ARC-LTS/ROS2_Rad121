@@ -170,9 +170,13 @@ class GPPredictor(Node):
                     for ls in self.landmark_samples:
                         ls_dist_sq = (x - ls['x'])**2 + (y - ls['y'])**2
                         if ls_dist_sq < ls_min_dist_sq:
-                            # Running average instead of ratchet-up: prevents a single
-                            # transient spike from permanently inflating the landmark value.
-                            ls['value'] = (ls['value'] + rad_value) / 2.0
+                            # Preserve the peak value seen at this location.
+                            # The 5-sample rolling average upstream already suppresses transient
+                            # spikes before they reach here, so the smoothed rad_value is a
+                            # real sustained reading — it should never drive the landmark down.
+                            # Average the position to converge toward the true source location,
+                            # but keep the maximum radiation value so confirmed sources never fade.
+                            ls['value'] = max(ls['value'], rad_value)
                             ls['x'] = (ls['x'] + x) / 2.0
                             ls['y'] = (ls['y'] + y) / 2.0
                             is_far_from_existing = False

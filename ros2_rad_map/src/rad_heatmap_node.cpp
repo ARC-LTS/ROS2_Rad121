@@ -416,7 +416,10 @@ private:
         {
             for (unsigned int x = 0; x < map_copy.info.width; ++x)
             {
-                if (map_copy.data[y * map_copy.info.width + x] < 50 && map_copy.data[y * map_copy.info.width + x] >= 0)
+                // Predict at all KNOWN cells (free AND occupied/shelves), skip unknown (-1).
+                // This allows the GP to show radiation inside shelf structures where sources
+                // may be placed, since the simulator uses 1/r² with no obstacle attenuation.
+                if (map_copy.data[y * map_copy.info.width + x] >= 0)
                 {
                     geometry_msgs::msg::Point p;
                     p.x = origin_x + (x + 0.5) * res;
@@ -476,10 +479,19 @@ private:
                     for (int c = 0; c < hist_mean_raw.cols; ++c) {
                         float uncertainty = hist_std_raw.at<float>(r, c);
                         bool is_visible = (local_mask.at<uchar>(r, c) == 255);
-                        
-                        // Heuristic: If we are visible OR if uncertainty is low enough, trust the GP prediction.
-                        // This fills 'gaps' in the radiation field where raycasting might have failed but GP has high confidence.
-                        if (is_visible || uncertainty < 1.0) { // Trust GP if it's confident (uncertainty < 1.0)
+
+                        // Map row r to map-grid row (image is y-flipped relative to map).
+                        // We need the ORIGINAL map y (bottom-up) from the image row (top-down).
+                        unsigned int map_grid_y = map_copy.info.height - 1 - r;
+                        int8_t occ = map_copy.data[map_grid_y * map_copy.info.width + c];
+                        bool is_occupied = (occ >= 50);
+
+                        // For free-space cells: trust GP when visible OR uncertainty is low (< 1.0 mrem/hr).
+                        // For occupied cells (shelves): the flood-fill never reaches them, so they are
+                        // never "visible". Use a more permissive threshold (< 2.0) since the GP is
+                        // extrapolating based on nearby corridor readings — still requires some confidence.
+                        float uncertainty_threshold = is_occupied ? 2.0f : 1.0f;
+                        if (is_visible || uncertainty < uncertainty_threshold) {
                             hist_mean_occluded.at<float>(r, c) = hist_mean_raw.at<float>(r, c);
                             hist_std_occluded.at<float>(r, c) = hist_std_raw.at<float>(r, c);
                         }
@@ -600,9 +612,12 @@ private:
             for (unsigned int x = 0; x < map_copy.info.width; ++x) {
                 unsigned int image_y = map_copy.info.height - 1 - y;
                 int8_t occupancy = map_copy.data[y * map_copy.info.width + x];
-                
-                free_space_mask.at<uchar>(image_y, x) = (occupancy >= 0 && occupancy < 50) ? 255 : 0;
-                wall_mask.at<uchar>(image_y, x) = (occupancy >= 50 || occupancy == -1) ? 255 : 0;
+
+                // Include occupied cells (shelves) in the painted area so that sources
+                // inside shelf structures are visible on the heatmap.
+                // Unknown cells (-1) are still excluded — no data, no prediction.
+                free_space_mask.at<uchar>(image_y, x) = (occupancy >= 0) ? 255 : 0;
+                wall_mask.at<uchar>(image_y, x) = (occupancy == -1) ? 255 : 0;
             }
         }
 
