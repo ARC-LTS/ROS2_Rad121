@@ -54,6 +54,10 @@ public:
         this->declare_parameter<double>("marker_scale", 0.5);
         this->declare_parameter<double>("matching_threshold_m", 1.5);
         this->declare_parameter<double>("min_peak_mrem_hr", 0.4);
+        // A peak must be found in the same location at least this many consecutive
+        // service calls before it is promoted to a "confirmed source".
+        // At the default 15-second interval, 3 = confirmed after ~45 s of stability.
+        this->declare_parameter<int>("source_confirmation_count", 3);
 
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
@@ -61,6 +65,7 @@ public:
         marker_scale_ = this->get_parameter("marker_scale").as_double();
         matching_threshold_m_ = this->get_parameter("matching_threshold_m").as_double();
         min_peak_mrem_hr_ = this->get_parameter("min_peak_mrem_hr").as_double();
+        source_confirmation_count_ = this->get_parameter("source_confirmation_count").as_int();
 
         rad_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
             "/rad", 10, std::bind(&PeakFinderClientNode::radCallback, this, std::placeholders::_1));
@@ -73,14 +78,19 @@ public:
 
         peak_finder_client_ = this->create_client<ros2_rad_map::srv::FindPeaks>("/find_rad_peaks");
 
+        // Candidate peaks: all zones above threshold, whether confirmed or not
         zone_waypoints_pub_ = this->create_publisher<ros2_rad_map::msg::RadZoneArray>("/radiation_zones", 10);
         marker_array_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/radiation_peak_markers", 10);
-        
+
+        // Confirmed sources: peaks that have recurred in the same location >= source_confirmation_count times
+        confirmed_sources_pub_ = this->create_publisher<ros2_rad_map::msg::RadZoneArray>("/confirmed_rad_sources", 10);
+        confirmed_source_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/confirmed_rad_source_markers", 10);
+
         timer_ = this->create_wall_timer(
             std::chrono::seconds(15),
             std::bind(&PeakFinderClientNode::callPeakFinderService, this));
-            
-        RCLCPP_INFO(this->get_logger(), "Peak Finder Client initialized.");
+
+        RCLCPP_INFO(this->get_logger(), "Peak Finder Client initialized. Confirmation threshold: %d detections.", source_confirmation_count_);
         if (!peak_finder_client_->wait_for_service(std::chrono::seconds(10))) {
             RCLCPP_ERROR(this->get_logger(), "Service /find_rad_peaks not available. Exiting.");
             rclcpp::shutdown();
@@ -134,12 +144,13 @@ private:
         peak_finder_client_->async_send_request(request, [this](rclcpp::Client<ros2_rad_map::srv::FindPeaks>::SharedFuture future) {
             try {
                 auto response = future.get();
-                
+
                 std::lock_guard<std::mutex> lock(data_mutex_);
 
                 std::vector<bool> matched_new_peaks(response->peaks.size(), false);
                 std::vector<bool> matched_persistent_zones(persistent_zones_.size(), false);
 
+                // Match each new peak to the nearest existing zone within matching_threshold_m_.
                 for (size_t i = 0; i < response->peaks.size(); ++i) {
                     const auto& new_peak = response->peaks[i];
                     double min_dist_sq = std::pow(matching_threshold_m_, 2);
@@ -159,24 +170,36 @@ private:
                     }
 
                     if (best_match_idx != -1) {
-                        persistent_zones_[best_match_idx].center.x = new_peak.x;
-                        persistent_zones_[best_match_idx].center.y = new_peak.y;
-                        persistent_zones_[best_match_idx].center.z = new_peak.z;
-                        
+                        // Running-average position update: the estimate converges toward the
+                        // true source location as more detections accumulate.
+                        double n = static_cast<double>(zone_detection_counts_[best_match_idx]);
+                        persistent_zones_[best_match_idx].center.x =
+                            (persistent_zones_[best_match_idx].center.x * n + new_peak.x) / (n + 1.0);
+                        persistent_zones_[best_match_idx].center.y =
+                            (persistent_zones_[best_match_idx].center.y * n + new_peak.y) / (n + 1.0);
+                        // Keep the peak radiation value seen at this location — never average down.
+                        persistent_zones_[best_match_idx].center.z =
+                            std::max(persistent_zones_[best_match_idx].center.z, new_peak.z);
+
+                        zone_detection_counts_[best_match_idx]++;
+
                         matched_new_peaks[i] = true;
                         matched_persistent_zones[best_match_idx] = true;
                     }
                 }
 
+                // Unmatched new peaks become new candidate zones (count = 1).
                 for (size_t i = 0; i < response->peaks.size(); ++i) {
                     if (!matched_new_peaks[i]) {
                         ros2_rad_map::msg::RadZone new_zone;
                         new_zone.label = std::string(1, next_zone_label_++);
                         new_zone.center = response->peaks[i];
                         persistent_zones_.push_back(new_zone);
+                        zone_detection_counts_.push_back(1);
                     }
                 }
 
+                // --- Publish candidate peaks (unchanged behaviour) ---
                 std::vector<ros2_rad_map::msg::RadZone> zones_to_publish;
                 for (const auto& zone : persistent_zones_) {
                     if (zone.center.z >= min_peak_mrem_hr_) {
@@ -235,9 +258,97 @@ private:
                     text_marker.text = ss.str();
                     marker_array.markers.push_back(text_marker);
                 }
-                
+
                 zone_waypoints_pub_->publish(std::move(zone_array_msg));
                 marker_array_pub_->publish(marker_array);
+
+                // --- Publish confirmed sources ---
+                // A zone is "confirmed" once it has been detected in the same location
+                // at least source_confirmation_count_ times.  At that point we have
+                // enough spatial convergence to assert a point source exists there.
+                std::vector<ros2_rad_map::msg::RadZone> confirmed_zones;
+                std::vector<int> confirmed_counts;
+                for (size_t j = 0; j < persistent_zones_.size(); ++j) {
+                    if (zone_detection_counts_[j] >= source_confirmation_count_ &&
+                        persistent_zones_[j].center.z >= min_peak_mrem_hr_)
+                    {
+                        confirmed_zones.push_back(persistent_zones_[j]);
+                        confirmed_counts.push_back(zone_detection_counts_[j]);
+                    }
+                }
+
+                if (!confirmed_zones.empty()) {
+                    auto confirmed_msg = std::make_unique<ros2_rad_map::msg::RadZoneArray>();
+                    confirmed_msg->header.stamp = this->get_clock()->now();
+                    confirmed_msg->header.frame_id = map_frame_;
+                    confirmed_msg->zones = confirmed_zones;
+                    confirmed_sources_pub_->publish(std::move(confirmed_msg));
+
+                    // Distinct visual: larger solid-red cylinders with count annotation
+                    visualization_msgs::msg::MarkerArray confirmed_markers;
+                    visualization_msgs::msg::Marker conf_clear;
+                    conf_clear.header.stamp = this->get_clock()->now();
+                    conf_clear.header.frame_id = map_frame_;
+                    conf_clear.action = visualization_msgs::msg::Marker::DELETEALL;
+                    confirmed_markers.markers.push_back(conf_clear);
+
+                    int conf_id = 0;
+                    double conf_max_rad = min_peak_mrem_hr_;
+                    for (const auto& z : confirmed_zones) {
+                        if (z.center.z > conf_max_rad) conf_max_rad = z.center.z;
+                    }
+
+                    for (size_t k = 0; k < confirmed_zones.size(); ++k) {
+                        const auto& zone = confirmed_zones[k];
+                        double scale = marker_scale_ * 1.6;  // larger than candidate peaks
+
+                        // Cylinder body
+                        visualization_msgs::msg::Marker cyl;
+                        cyl.header.stamp = this->get_clock()->now();
+                        cyl.header.frame_id = map_frame_;
+                        cyl.ns = "confirmed_sources";
+                        cyl.id = conf_id++;
+                        cyl.type = visualization_msgs::msg::Marker::CYLINDER;
+                        cyl.action = visualization_msgs::msg::Marker::ADD;
+                        cyl.pose.position = zone.center;
+                        cyl.pose.position.z = 0.0;
+                        cyl.pose.orientation.w = 1.0;
+                        cyl.scale.x = scale;
+                        cyl.scale.y = scale;
+                        cyl.scale.z = 0.1;
+                        // Solid red — unambiguous "source confirmed" indicator
+                        cyl.color.r = 1.0f; cyl.color.g = 0.0f; cyl.color.b = 0.0f; cyl.color.a = 0.85f;
+                        confirmed_markers.markers.push_back(cyl);
+
+                        // Text: label, radiation value, detection count
+                        visualization_msgs::msg::Marker txt;
+                        txt.header.stamp = this->get_clock()->now();
+                        txt.header.frame_id = map_frame_;
+                        txt.ns = "confirmed_source_labels";
+                        txt.id = conf_id++;
+                        txt.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+                        txt.action = visualization_msgs::msg::Marker::ADD;
+                        txt.pose.position = zone.center;
+                        txt.pose.position.z += scale * 1.2;
+                        txt.pose.orientation.w = 1.0;
+                        txt.scale.z = marker_scale_ * 0.85;
+                        txt.color.r = 1.0f; txt.color.g = 0.4f; txt.color.b = 0.4f; txt.color.a = 1.0f;
+                        std::stringstream ss2;
+                        ss2 << "SRC-" << zone.label
+                            << "  " << std::fixed << std::setprecision(1) << zone.center.z << " mrem/hr"
+                            << "  [n=" << confirmed_counts[k] << "]";
+                        txt.text = ss2.str();
+                        confirmed_markers.markers.push_back(txt);
+
+                        RCLCPP_INFO(
+                            this->get_logger(),
+                            "Confirmed source SRC-%s at (%.2f, %.2f): %.2f mrem/hr  [detections=%d]",
+                            zone.label.c_str(), zone.center.x, zone.center.y,
+                            zone.center.z, confirmed_counts[k]);
+                    }
+
+                    confirmed_source_markers_pub_->publish(confirmed_markers);
+                }
 
             } catch (const std::exception &e) {
                 RCLCPP_ERROR(this->get_logger(), "Service call failed: %s", e.what());
@@ -249,6 +360,8 @@ private:
     std::mutex data_mutex_;
     std::vector<RadSample> historical_samples_;
     std::vector<ros2_rad_map::msg::RadZone> persistent_zones_;
+    // Parallel to persistent_zones_: how many service calls have found a peak here.
+    std::vector<int> zone_detection_counts_;
     char next_zone_label_ = 'A';
     bool is_service_running_ = false;
 
@@ -257,6 +370,8 @@ private:
     rclcpp::Client<ros2_rad_map::srv::FindPeaks>::SharedPtr peak_finder_client_;
     rclcpp::Publisher<ros2_rad_map::msg::RadZoneArray>::SharedPtr zone_waypoints_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_array_pub_;
+    rclcpp::Publisher<ros2_rad_map::msg::RadZoneArray>::SharedPtr confirmed_sources_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr confirmed_source_markers_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
 
     tf2_ros::Buffer tf_buffer_;
@@ -267,6 +382,7 @@ private:
     double marker_scale_;
     double matching_threshold_m_;
     double min_peak_mrem_hr_;
+    int source_confirmation_count_;
     double current_background_level_{0.0};
 };
 
