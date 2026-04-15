@@ -1,13 +1,13 @@
 import os
+import re
 import yaml
-import subprocess
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
-def get_excluded_topics():
-    """Load excluded topics from the package config file."""
+
+def build_exclude_regex():
+    """Build a single regex from rosbag_excluded_topics.yaml plus image_transport variants."""
     config_path = os.path.join(
         get_package_share_directory("rad_evaluation"),
         "config",
@@ -15,55 +15,27 @@ def get_excluded_topics():
     )
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-    return set(config.get("excluded_topics") or [])
 
-def get_included_topics():
-    """Fetch all ROS 2 topics and exclude specific ones."""
-    excluded_topics = get_excluded_topics()
+    excluded = config.get("excluded_topics") or []
 
-    try:
-        # Get list of all available topics
-        result = subprocess.run(["ros2", "topic", "list"], capture_output=True, text=True, check=True)
-        all_topics = result.stdout.splitlines()
+    # Exact-match each excluded topic, plus catch all image_transport compressed variants
+    patterns = [re.escape(t) for t in excluded]
+    patterns.append(r".+/(compressed|compressedDepth|theora)$")
 
-        included_topics = []
-        for topic in all_topics:
-            # 1. Skip explicitly excluded topics
-            if topic in excluded_topics:
-                continue
+    return "(" + "|".join(f"^{p}$" for p in patterns) + ")"
 
-            # 2. Safest approach: filter out ALL auto-generated image_transport topics.
-            # This completely prevents format mismatch errors and saves CPU/disk space.
-            if topic.endswith(('/compressed', '/compressedDepth', '/theora')):
-                continue
-
-            included_topics.append(topic)
-
-        if not included_topics:
-            raise RuntimeError("No topics left after exclusion!")
-
-        return included_topics
-    except subprocess.CalledProcessError as e:
-        print(f"Error fetching topics: {e}")
-        return []
 
 def generate_launch_description():
-    topics_to_record = get_included_topics()
+    exclude_regex = build_exclude_regex()
 
-    if not topics_to_record:
-        print("No topics available to record.")
-        return LaunchDescription()
-
+    # The stopper node owns the recorder subprocess so it holds the PID directly.
+    # It starts the recorder on init and stops it cleanly via the /rosbag/stop service.
     stopper = Node(
         package='rad_evaluation',
         executable='rosbag_stopper.py',
         name='rosbag_stopper',
         output='screen',
+        parameters=[{'exclude_regex': exclude_regex}],
     )
 
-    recorder = ExecuteProcess(
-        cmd=["ros2", "bag", "record", "--compression-mode", "file", "--compression-format", "zstd"] + topics_to_record,
-        output="screen",
-    )
-
-    return LaunchDescription([stopper, recorder])
+    return LaunchDescription([stopper])
