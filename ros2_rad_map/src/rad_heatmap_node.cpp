@@ -14,6 +14,8 @@
 #include "ros2_rad_map/srv/save_maps.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include <vector>
+#include <deque>
+#include <numeric>
 #include <mutex>
 #include <thread>
 #include <future>
@@ -82,6 +84,8 @@ public:
         gp_std_dev_pub_ = it.advertise("/rad_heatmap/gp_std_dev", 1);
 
         gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
+        source_estimate_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/rad_heatmap/source_estimates", 10);
 
         save_maps_service_ = this->create_service<std_srvs::srv::Trigger>(
             "save_rad_maps",
@@ -105,6 +109,19 @@ private:
     std::mutex data_mutex_;
     std::mutex update_mutex_;
     std::mutex zone_mutex_;
+
+    // Background estimation (GM tube — Poisson statistics)
+    static constexpr size_t BG_BUFFER_SIZE   = 50;
+    static constexpr double ELEVATION_SIGMA  = 2.5;   // multiples of σ above background
+    static constexpr size_t STABLE_COUNT     = 5;     // readings to average before committing
+    static constexpr double STABLE_RADIUS_M  = 1.0;   // max spread of a "stable" cluster (m)
+
+    std::deque<double> bg_buffer_;
+    double bg_mean_ = 0.0;
+    double bg_std_  = 1.0;   // conservative until buffer fills
+
+    struct PendingPoint { double x, y, value; };
+    std::vector<PendingPoint> pending_elevated_;
 
     bool map_received_ = false;
     bool is_updating_ = false;
@@ -144,6 +161,7 @@ private:
     image_transport::Publisher gp_std_dev_pub_;
     rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr source_estimate_pub_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -316,48 +334,122 @@ private:
         RCLCPP_INFO_ONCE(this->get_logger(), "Initial map processed and memory allocated.");
     }
 
+    // Recompute bg_mean_ / bg_std_ from bg_buffer_. Must be called under data_mutex_.
+    void updateBackgroundStats()
+    {
+        if (bg_buffer_.empty()) return;
+        double sum = std::accumulate(bg_buffer_.begin(), bg_buffer_.end(), 0.0);
+        bg_mean_ = sum / bg_buffer_.size();
+        if (bg_buffer_.size() > 1) {
+            double sq = 0.0;
+            for (double v : bg_buffer_) sq += (v - bg_mean_) * (v - bg_mean_);
+            bg_std_ = std::sqrt(sq / (bg_buffer_.size() - 1));
+        }
+    }
+
+    // Commit the current pending_elevated_ cluster as a single averaged sample.
+    // Must be called under data_mutex_.
+    void commitPendingSample()
+    {
+        if (pending_elevated_.empty()) return;
+        double mx = 0, my = 0, mv = 0;
+        for (const auto &p : pending_elevated_) { mx += p.x; my += p.y; mv += p.value; }
+        double n = static_cast<double>(pending_elevated_.size());
+        RadiationSample s = {mx / n, my / n, mv / n, next_sample_id_++};
+        historical_samples_.push_back(s);
+        RCLCPP_INFO(this->get_logger(),
+            "Committed elevated sample #%d at (%.2f, %.2f): %.3f mrem/hr (avg of %zu readings)",
+            s.id, s.x, s.y, s.value, pending_elevated_.size());
+        pending_elevated_.clear();
+    }
+
     void radCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
     {
-        if (!map_received_ || msg->data.size() < 2)
-            return;
+        if (!map_received_ || msg->data.size() < 2) return;
 
-        try
-        {
-            geometry_msgs::msg::PoseStamped pose_in_sensor, pose_in_map;
-            pose_in_sensor.header.frame_id = sensor_frame_;
-            pose_in_sensor.header.stamp = rclcpp::Time(0);
+        double reading = msg->data[1]; // mrem/hr
+
+        geometry_msgs::msg::PoseStamped pose_in_sensor, pose_in_map;
+        pose_in_sensor.header.frame_id = sensor_frame_;
+        pose_in_sensor.header.stamp = rclcpp::Time(0);
+        try {
             tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(500));
+        } catch (const tf2::TransformException &ex) {
+            RCLCPP_WARN(this->get_logger(), "TF Error: %s", ex.what());
+            return;
+        }
+        double x = pose_in_map.pose.position.x;
+        double y = pose_in_map.pose.position.y;
 
-            double x = pose_in_map.pose.position.x;
-            double y = pose_in_map.pose.position.y;
+        std::lock_guard<std::mutex> lock(data_mutex_);
 
-            {
-                std::lock_guard<std::mutex> lock(data_mutex_);
-                
-                // Spatial downsampling: Only add if we've moved significantly (e.g., 0.2m)
-                bool informative = true;
-                if (!historical_samples_.empty()) {
-                    const auto& last = historical_samples_.back();
-                    double d2 = std::pow(last.x - x, 2) + std::pow(last.y - y, 2);
-                    if (d2 < 0.04) { // 0.2m threshold
-                        informative = false;
-                    }
-                }
+        // Elevation threshold: background mean + 2.5 * max(empirical σ, Poisson σ).
+        // GM tube counts follow Poisson statistics, so the irreducible noise floor is
+        // sqrt(mean) — we use whichever is larger so the threshold is never too tight.
+        double poisson_std = std::sqrt(std::max(bg_mean_, 0.01));
+        double threshold   = bg_mean_ + ELEVATION_SIGMA * std::max(bg_std_, poisson_std);
 
-                if (informative) {
-                    RadiationSample sample = {x, y, msg->data[1], next_sample_id_++};
-                    historical_samples_.push_back(sample);
-                    
-                    // Cap the history to prevent infinite growth
-                    if (historical_samples_.size() > 1000) {
-                        historical_samples_.erase(historical_samples_.begin());
-                    }
-                }
+        if (reading <= threshold) {
+            // --- Background reading ---
+            // Update rolling background estimate for threshold calculation.
+            bg_buffer_.push_back(reading);
+            if (bg_buffer_.size() > BG_BUFFER_SIZE) bg_buffer_.pop_front();
+            updateBackgroundStats();
+
+            // Commit any partial elevated cluster — robot has left the hot region.
+            if (!pending_elevated_.empty()) commitPendingSample();
+
+            // Also store sparsely in historical_samples_ so the GP has anchor points
+            // showing where radiation is LOW. Without these the GP extrapolates source
+            // readings into unvisited background regions and the whole map turns hot.
+            // Use a coarser 1 m spacing — enough to anchor the GP, won't flood the buffer.
+            bool far_enough = true;
+            if (!historical_samples_.empty()) {
+                const auto &last_bg = historical_samples_.back();
+                double d2 = std::pow(last_bg.x - x, 2) + std::pow(last_bg.y - y, 2);
+                if (d2 < 1.0) far_enough = false;  // 1 m spacing for background
+            }
+            if (!far_enough) return;
+
+            RadiationSample s = {x, y, reading, next_sample_id_++};
+            historical_samples_.push_back(s);
+
+            // When the buffer is full evict only background-level samples — never
+            // elevated ones — so committed source readings stay locked in.
+            if (historical_samples_.size() > 1000) {
+                auto evict = std::min_element(
+                    historical_samples_.begin(), historical_samples_.end(),
+                    [](const RadiationSample &a, const RadiationSample &b) {
+                        return a.value < b.value;
+                    });
+                historical_samples_.erase(evict);
+            }
+            return;
+        }
+
+        // --- Elevated reading ---
+
+        // If the robot has wandered too far from where this cluster started, commit first.
+        if (!pending_elevated_.empty()) {
+            const auto &origin = pending_elevated_.front();
+            double d2 = std::pow(origin.x - x, 2) + std::pow(origin.y - y, 2);
+            if (d2 > STABLE_RADIUS_M * STABLE_RADIUS_M) {
+                commitPendingSample();
             }
         }
-        catch (const tf2::TransformException &ex)
-        {
-            RCLCPP_WARN(this->get_logger(), "TF Error for logging sample: %s", ex.what());
+
+        // Spatial downsampling within the cluster (0.2 m).
+        if (!pending_elevated_.empty()) {
+            const auto &last = pending_elevated_.back();
+            double d2 = std::pow(last.x - x, 2) + std::pow(last.y - y, 2);
+            if (d2 < 0.04) return;
+        }
+
+        pending_elevated_.push_back({x, y, reading});
+
+        // Once we have enough stable readings, commit the averaged sample.
+        if (pending_elevated_.size() >= STABLE_COUNT) {
+            commitPendingSample();
         }
     }
 
@@ -373,6 +465,7 @@ private:
         cv::Mat raycasting_map_copy;
         cv::Mat visibility_mask_copy;
         std::vector<RadiationSample> hist_samples_copy;
+        double bg_mean_copy, bg_std_copy;
         bool can_update = false;
 
         {
@@ -383,7 +476,9 @@ private:
                 map_copy = base_map_;
                 raycasting_map_copy = map_image_for_raycasting_.clone();
                 hist_samples_copy = historical_samples_;
-                
+                bg_mean_copy = bg_mean_;
+                bg_std_copy  = bg_std_;
+
                 if (persistent_visibility_mask_.empty()) {
                     persistent_visibility_mask_ = cv::Mat::zeros(map_copy.info.height, map_copy.info.width, CV_8U);
                 }
@@ -433,7 +528,7 @@ private:
 
         auto future = gp_client_->async_send_request(request);
 
-        std::thread([this, future = std::move(future), map_copy, raycasting_map_copy, visibility_mask_copy, valid_pixel_coords, hist_samples_copy]() mutable {
+        std::thread([this, future = std::move(future), map_copy, raycasting_map_copy, visibility_mask_copy, valid_pixel_coords, hist_samples_copy, bg_mean_copy, bg_std_copy]() mutable {
             try
             {
                 auto response = future.get();
@@ -511,6 +606,7 @@ private:
                 }
 
                 publishHeatmaps(hist_mean_occluded, hist_std_occluded, map_copy);
+                publishSourceEstimates(hist_mean_occluded, map_copy, bg_mean_copy, bg_std_copy);
             }
             catch (const std::exception &e)
             {
@@ -579,6 +675,93 @@ private:
                 }
             }
         }
+    }
+
+    // Find local maxima in the GP mean map and publish a MarkerArray of source estimates.
+    // gp_mean is in map-grid coordinates (not y-flipped): pixel (col, row) → world (x, y).
+    void publishSourceEstimates(const cv::Mat &gp_mean,
+                                const nav_msgs::msg::OccupancyGrid &map_info,
+                                double bg_mean, double bg_std)
+    {
+        double poisson_std = std::sqrt(std::max(bg_mean, 0.01));
+        double threshold   = bg_mean + ELEVATION_SIGMA * std::max(bg_std, poisson_std);
+
+        // Threshold → binary mask of elevated regions
+        cv::Mat elevated;
+        cv::threshold(gp_mean, elevated, threshold, 1.0, cv::THRESH_BINARY);
+        elevated.convertTo(elevated, CV_8U, 255.0);
+
+        // Find connected components
+        cv::Mat labels, stats, centroids;
+        int n = cv::connectedComponentsWithStats(elevated, labels, stats, centroids);
+
+        visualization_msgs::msg::MarkerArray markers;
+
+        // Clear previous markers
+        visualization_msgs::msg::Marker del;
+        del.header.frame_id = map_frame_;
+        del.header.stamp = this->now();
+        del.action = visualization_msgs::msg::Marker::DELETEALL;
+        markers.markers.push_back(del);
+
+        double res      = map_info.info.resolution;
+        double origin_x = map_info.info.origin.position.x;
+        double origin_y = map_info.info.origin.position.y;
+        int    height   = static_cast<int>(map_info.info.height);
+
+        int marker_id = 0;
+        for (int i = 1; i < n; ++i) {  // label 0 is background
+            int area = stats.at<int>(i, cv::CC_STAT_AREA);
+            if (area < 9) continue;  // reject tiny noise clusters
+
+            // Find the pixel with the peak GP value inside this component
+            cv::Mat component_mask = (labels == i);
+            double min_v, max_v;
+            cv::Point max_loc;
+            cv::minMaxLoc(gp_mean, &min_v, &max_v, nullptr, &max_loc, component_mask);
+
+            // Convert map-grid pixel to world coordinates.
+            // hist_mean_raw uses map-grid coords directly (no y-flip), so:
+            //   world_x = origin_x + (col + 0.5) * res
+            //   world_y = origin_y + (row + 0.5) * res
+            double wx = origin_x + (max_loc.x + 0.5) * res;
+            double wy = origin_y + (max_loc.y + 0.5) * res;
+
+            // Sphere at the estimated source location
+            visualization_msgs::msg::Marker sphere;
+            sphere.header.frame_id = map_frame_;
+            sphere.header.stamp    = this->now();
+            sphere.ns              = "source_estimates";
+            sphere.id              = marker_id++;
+            sphere.type            = visualization_msgs::msg::Marker::SPHERE;
+            sphere.action          = visualization_msgs::msg::Marker::ADD;
+            sphere.pose.position.x = wx;
+            sphere.pose.position.y = wy;
+            sphere.pose.position.z = 0.5;
+            sphere.pose.orientation.w = 1.0;
+            sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.6;
+            sphere.color.r = 1.0f; sphere.color.g = 0.8f; sphere.color.b = 0.0f; sphere.color.a = 0.9f;
+            markers.markers.push_back(sphere);
+
+            // Text label showing estimated peak dose rate
+            visualization_msgs::msg::Marker text;
+            text.header        = sphere.header;
+            text.ns            = "source_estimate_labels";
+            text.id            = marker_id++;
+            text.type          = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+            text.action        = visualization_msgs::msg::Marker::ADD;
+            text.pose.position = sphere.pose.position;
+            text.pose.position.z = 1.3;
+            text.pose.orientation.w = 1.0;
+            text.scale.z       = 0.35;
+            text.color.r = text.color.g = text.color.b = 1.0f; text.color.a = 1.0f;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "~%.2f mrem/hr", max_v);
+            text.text = buf;
+            markers.markers.push_back(text);
+        }
+
+        source_estimate_pub_->publish(markers);
     }
 
     void publishHeatmaps(const cv::Mat &hist_mean, const cv::Mat &hist_std, const nav_msgs::msg::OccupancyGrid &map_copy)
