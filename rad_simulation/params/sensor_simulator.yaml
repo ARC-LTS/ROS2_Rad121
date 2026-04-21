@@ -4,6 +4,7 @@ rad_sensor_simulator:
     robot_frame: "base_link"
     publish_rate_hz: 10.0
     min_sensing_distance_m: 0.58
+    effective_range_m: 2.0  # Distance (m) at which the full source intensity is read; increase to extend detection range
 
 rad_field_server:
   ros__parameters:

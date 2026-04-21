@@ -35,15 +35,18 @@ public:
         this->declare_parameter<std::string>("robot_frame", "base_link");
         this->declare_parameter<double>("publish_rate_hz", 10.0);
         this->declare_parameter<double>("min_sensing_distance_m", 0.58);
+        this->declare_parameter<double>("effective_range_m", 5.0);
         this->declare_parameter<bool>("background_radiation_enabled", true);
         this->declare_parameter<double>("background_radiation_min", 0.05);
         this->declare_parameter<double>("background_radiation_max", 1.0);
-        
+
         map_frame_ = this->get_parameter("map_frame").as_string();
         robot_frame_ = this->get_parameter("robot_frame").as_string();
         double publish_rate = this->get_parameter("publish_rate_hz").as_double();
         double min_sensing_distance = this->get_parameter("min_sensing_distance_m").as_double();
         min_distance_sq_ = min_sensing_distance * min_sensing_distance;
+        double effective_range = this->get_parameter("effective_range_m").as_double();
+        effective_range_sq_ = effective_range * effective_range;
 
         // Cache background parameters to avoid get_parameter() calls in the 10 Hz hot path
         bg_enabled_ = this->get_parameter("background_radiation_enabled").as_bool();
@@ -167,10 +170,11 @@ private:
                 dist_sq = min_distance_sq_;
             }
 
-            // Improved point source model:
-            // I(r) = I_source * (r_min^2 / r^2)
-            // This ensures that I_source is the peak reading at the minimum sensing distance.
-            total_mrem_hr += source.intensity * (min_distance_sq_ / dist_sq);
+            // Point source model:
+            // I(r) = I_source * (effective_range^2 / r^2)
+            // effective_range_m sets the distance at which you read the full source intensity.
+            // Increasing it extends the sphere of influence without changing peak intensity.
+            total_mrem_hr += source.intensity * (effective_range_sq_ / dist_sq);
         }
 
         // Publish the message
@@ -197,6 +201,7 @@ private:
     double background_radiation_;
     std::mutex source_mutex_;
     double min_distance_sq_;
+    double effective_range_sq_;
 
     // Cached background parameters (updated via parameter callback)
     bool bg_enabled_;
