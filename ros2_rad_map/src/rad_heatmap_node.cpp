@@ -92,9 +92,18 @@ public:
         stable_source_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
             "/rad_heatmap/stable_source_captured", 10);
 
+        // Latched so any new subscriber immediately sees the last computed boundaries.
+        zone_boundary_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/rad_heatmap/zone_boundaries",
+            rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+
         save_maps_service_ = this->create_service<std_srvs::srv::Trigger>(
             "save_rad_maps",
             std::bind(&DynamicRadiationHeatmapNode::saveMapsCallback, this, std::placeholders::_1, std::placeholders::_2));
+
+        reset_service_ = this->create_service<std_srvs::srv::Trigger>(
+            "reset_rad_heatmap",
+            std::bind(&DynamicRadiationHeatmapNode::resetCallback, this, std::placeholders::_1, std::placeholders::_2));
         
         gp_update_timer_ = this->create_wall_timer(
             std::chrono::duration<double>(1.0 / gp_update_frequency),
@@ -157,6 +166,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr zone_sub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_maps_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
     rclcpp::TimerBase::SharedPtr gp_update_timer_;
     image_transport::Publisher historical_heatmap_pub_;
     image_transport::Publisher historical_std_dev_pub_;
@@ -168,6 +178,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr source_estimate_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr stable_source_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr zone_boundary_pub_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -205,6 +216,70 @@ private:
                 }
             }
         }
+    }
+
+    void resetCallback(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        // --- 1. Clear all radiation data under the data lock ---
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            historical_samples_.clear();
+            bg_buffer_.clear();
+            bg_mean_        = 0.0;
+            bg_std_         = 1.0;
+            pending_elevated_.clear();
+            next_sample_id_ = 0;
+
+            if (!persistent_visibility_mask_.empty()) {
+                persistent_visibility_mask_ = cv::Mat::zeros(
+                    persistent_visibility_mask_.size(), CV_8U);
+            }
+
+            // Clear cached display images so stale frames don't persist
+            latest_historical_mean_image_ = cv::Mat();
+            latest_historical_std_dev_image_ = cv::Mat();
+            raw_mean_data_ = cv::Mat();
+            raw_std_data_  = cv::Mat();
+        }
+
+        // --- 2. Clear display contours ---
+        {
+            std::lock_guard<std::mutex> lock(zone_mutex_);
+            zone_contours_.clear();
+        }
+
+        // --- 3. Publish DELETEALL to all latched marker topics ---
+        auto make_deleteall = [&](const std::string & ns) {
+            visualization_msgs::msg::MarkerArray ma;
+            visualization_msgs::msg::Marker m;
+            m.header.frame_id = map_frame_;
+            m.header.stamp    = this->now();
+            m.ns     = ns;
+            m.action = visualization_msgs::msg::Marker::DELETEALL;
+            ma.markers.push_back(m);
+            return ma;
+        };
+        zone_boundary_pub_->publish(make_deleteall("zone_boundaries"));
+        source_estimate_pub_->publish(make_deleteall("source_estimates"));
+        source_estimate_pub_->publish(make_deleteall("source_estimate_labels"));
+
+        // --- 4. Publish blank float maps so subscribers (e.g. explore node) see a clean slate ---
+        if (map_received_) {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            cv::Mat blank = cv::Mat::zeros(base_map_.info.height, base_map_.info.width, CV_32F);
+            std_msgs::msg::Header h;
+            h.stamp    = this->now();
+            h.frame_id = map_frame_;
+            auto blank_msg = cv_bridge::CvImage(h, "32FC1", blank).toImageMsg();
+            raw_mean_map_pub_.publish(*blank_msg);
+            gp_mean_map_pub_.publish(*blank_msg);
+        }
+
+        response->success = true;
+        response->message = "Radiation heatmap reset: all samples, background, and markers cleared.";
+        RCLCPP_INFO(this->get_logger(), "Heatmap node reset via service.");
     }
 
     void saveMapsCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
@@ -622,6 +697,14 @@ private:
                     }
                 }
 
+                // Compute zone boundaries from the GP map and update the overlay contours.
+                auto display_contours = publishZoneBoundaries(
+                    hist_mean_occluded, map_copy, bg_mean_copy, bg_std_copy);
+                {
+                    std::lock_guard<std::mutex> lk(zone_mutex_);
+                    zone_contours_ = std::move(display_contours);
+                }
+
                 publishHeatmaps(hist_mean_occluded, hist_std_occluded, map_copy);
                 publishSourceEstimates(hist_mean_occluded, map_copy, bg_mean_copy, bg_std_copy);
             }
@@ -692,6 +775,110 @@ private:
                 }
             }
         }
+    }
+
+    // Compute the boundary of every elevated zone in the GP mean map and publish:
+    //   1. A MarkerArray of LINE_STRIP markers on /rad_heatmap/zone_boundaries (RViz 3-D)
+    //   2. Display-image-space contours for the heatmap overlay (returned for caller to use)
+    //
+    // Algorithm: threshold → MORPH_CLOSE (fill gaps) → MORPH_OPEN (remove specks)
+    //            → findContours(RETR_EXTERNAL) → approxPolyDP (smooth grid aliasing)
+    //
+    // gp_mean is in map-grid coordinates (no y-flip): pixel (col, row) = world (x, y).
+    std::vector<std::vector<cv::Point>> publishZoneBoundaries(
+        const cv::Mat &gp_mean,
+        const nav_msgs::msg::OccupancyGrid &map_info,
+        double bg_mean, double bg_std)
+    {
+        if (gp_mean.empty()) return {};
+
+        double poisson_std = std::sqrt(std::max(bg_mean, 0.01));
+        double threshold   = bg_mean + ELEVATION_SIGMA * std::max(bg_std, poisson_std);
+
+        // Need at least some background data before the threshold is meaningful.
+        if (bg_mean < 0.01 && bg_std < 0.01) return {};
+
+        // --- 1. Binary mask ---
+        cv::Mat binary;
+        cv::threshold(gp_mean, binary, threshold, 255.0, cv::THRESH_BINARY);
+        binary.convertTo(binary, CV_8U);
+
+        // --- 2. Morphological cleaning ---
+        // CLOSE: fills small holes / bridges narrow gaps between elevated blobs
+        // OPEN:  removes isolated speck noise below ~3-cell diameter
+        cv::Mat close_kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
+        cv::Mat open_kernel  = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+        cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, close_kernel);
+        cv::morphologyEx(binary, binary, cv::MORPH_OPEN,  open_kernel);
+
+        // --- 3. Find outermost contours only ---
+        std::vector<std::vector<cv::Point>> raw_contours;
+        cv::findContours(binary, raw_contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+        // --- 4. approxPolyDP: smooth grid-aliasing staircase ---
+        // epsilon=3 px keeps the shape accurate while removing pixel-level jaggedness.
+        std::vector<std::vector<cv::Point>> smooth;
+        for (const auto &c : raw_contours) {
+            if (std::abs(cv::contourArea(c)) < 9.0) continue;  // skip tiny noise
+            std::vector<cv::Point> approx;
+            cv::approxPolyDP(c, approx, 3.0 /*px*/, true /*closed*/);
+            if (approx.size() >= 3) smooth.push_back(approx);
+        }
+
+        // --- 5. Publish LINE_STRIP markers for RViz ---
+        double res      = map_info.info.resolution;
+        double origin_x = map_info.info.origin.position.x;
+        double origin_y = map_info.info.origin.position.y;
+        int    height   = static_cast<int>(map_info.info.height);
+
+        visualization_msgs::msg::MarkerArray markers;
+        {
+            visualization_msgs::msg::Marker del;
+            del.header.frame_id = map_frame_;
+            del.header.stamp    = this->now();
+            del.ns              = "zone_boundaries";
+            del.action          = visualization_msgs::msg::Marker::DELETEALL;
+            markers.markers.push_back(del);
+        }
+
+        int id = 0;
+        for (const auto &contour : smooth) {
+            visualization_msgs::msg::Marker line;
+            line.header.frame_id    = map_frame_;
+            line.header.stamp       = this->now();
+            line.ns                 = "zone_boundaries";
+            line.id                 = id++;
+            line.type               = visualization_msgs::msg::Marker::LINE_STRIP;
+            line.action             = visualization_msgs::msg::Marker::ADD;
+            line.scale.x            = 0.15;   // line width in metres
+            line.color.r = 1.0f; line.color.g = 0.45f; line.color.b = 0.0f; line.color.a = 1.0f;
+            line.pose.orientation.w = 1.0;
+            line.lifetime           = rclcpp::Duration::from_seconds(0);  // persist until replaced
+
+            for (const auto &pt : contour) {
+                // gp_mean pixel (col=pt.x, row=pt.y) → world coords (no y-flip needed)
+                geometry_msgs::msg::Point wp;
+                wp.x = origin_x + (pt.x + 0.5) * res;
+                wp.y = origin_y + (pt.y + 0.5) * res;
+                wp.z = 0.05;
+                line.points.push_back(wp);
+            }
+            if (!line.points.empty()) line.points.push_back(line.points.front());  // close loop
+            markers.markers.push_back(line);
+        }
+        zone_boundary_pub_->publish(markers);
+
+        // --- 6. Return display-image-space contours (y-flipped) for heatmap overlay ---
+        std::vector<std::vector<cv::Point>> display_contours;
+        display_contours.reserve(smooth.size());
+        for (const auto &c : smooth) {
+            std::vector<cv::Point> dc;
+            dc.reserve(c.size());
+            for (const auto &pt : c)
+                dc.push_back(cv::Point(pt.x, height - 1 - pt.y));
+            display_contours.push_back(std::move(dc));
+        }
+        return display_contours;
     }
 
     // Find local maxima in the GP mean map and publish a MarkerArray of source estimates.
@@ -838,7 +1025,7 @@ private:
         {
             std::lock_guard<std::mutex> lock(zone_mutex_);
             if (!zone_contours_.empty()) {
-                cv::drawContours(mean_display, zone_contours_, -1, cv::Scalar(255, 0, 255), 2);
+                cv::drawContours(mean_display, zone_contours_, -1, cv::Scalar(0, 165, 255), 2);
             }
             historical_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", mean_display).toImageMsg());
             
@@ -851,7 +1038,7 @@ private:
         {
             std::lock_guard<std::mutex> lock(zone_mutex_);
             if (!zone_contours_.empty()) {
-                cv::drawContours(blended_hist_std, zone_contours_, -1, cv::Scalar(255, 0, 255), 2);
+                cv::drawContours(blended_hist_std, zone_contours_, -1, cv::Scalar(0, 165, 255), 2);
             }
             historical_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_std).toImageMsg());
             
