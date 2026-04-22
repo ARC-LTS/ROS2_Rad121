@@ -165,15 +165,17 @@ private:
             double dz = source.position.z - sensor_position.z;
             double dist_sq = dx * dx + dy * dy + dz * dz;
 
-            if (dist_sq < min_distance_sq_)
+            // Clamp at effective_range_sq_ so reading never exceeds source.intensity.
+            // min_distance_sq_ is a fallback in case effective_range_m is set to 0.
+            double clamp_sq = std::max(effective_range_sq_, min_distance_sq_);
+            if (dist_sq < clamp_sq)
             {
-                dist_sq = min_distance_sq_;
+                dist_sq = clamp_sq;
             }
 
-            // Point source model:
-            // I(r) = I_source * (effective_range^2 / r^2)
-            // effective_range_m sets the distance at which you read the full source intensity.
-            // Increasing it extends the sphere of influence without changing peak intensity.
+            // Point source model: I(r) = I_source * (effective_range^2 / r^2)
+            // At r <= effective_range_m the reading is capped at source.intensity.
+            // Beyond effective_range_m it falls off as inverse-square.
             total_mrem_hr += source.intensity * (effective_range_sq_ / dist_sq);
         }
 
