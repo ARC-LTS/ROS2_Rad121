@@ -36,6 +36,7 @@ void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std:
 
 #include "std_msgs/msg/float64.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
 
 class DynamicRadiationHeatmapNode : public rclcpp::Node
 {
@@ -86,6 +87,10 @@ public:
         gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
         source_estimate_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/rad_heatmap/source_estimates", 10);
+        // Published each time a stable elevated sample is committed.
+        // The exploration node subscribes to this to know when to leave radiation mode.
+        stable_source_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
+            "/rad_heatmap/stable_source_captured", 10);
 
         save_maps_service_ = this->create_service<std_srvs::srv::Trigger>(
             "save_rad_maps",
@@ -162,6 +167,7 @@ private:
     rclcpp::Client<ros2_rad_map::srv::GPPredict>::SharedPtr gp_client_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr source_estimate_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr stable_source_pub_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -360,6 +366,17 @@ private:
         RCLCPP_INFO(this->get_logger(),
             "Committed elevated sample #%d at (%.2f, %.2f): %.3f mrem/hr (avg of %zu readings)",
             s.id, s.x, s.y, s.value, pending_elevated_.size());
+
+        // Notify the exploration node that a stable measurement has been captured
+        // so it can exit radiation mode and resume spatial exploration.
+        geometry_msgs::msg::PointStamped msg;
+        msg.header.stamp = this->now();
+        msg.header.frame_id = "map";
+        msg.point.x = s.x;
+        msg.point.y = s.y;
+        msg.point.z = 0.0;
+        stable_source_pub_->publish(msg);
+
         pending_elevated_.clear();
     }
 
