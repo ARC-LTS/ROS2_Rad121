@@ -10,6 +10,9 @@
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <depend>ament_index_python</depend>
+  <depend>rclpy</depend>
+  <depend>std_srvs</depend>
+  <depend>nav2_msgs</depend>
   <depend>rad121_monitor</depend>
   <depend>ros2_rad_map</depend>
   <depend>rad_simulation</depend>

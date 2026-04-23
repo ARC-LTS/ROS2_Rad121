@@ -26,6 +26,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'system_reset_node = rad_launch.system_reset_node:main',
         ],
     },
 )

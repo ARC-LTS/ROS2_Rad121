@@ -3,6 +3,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
 
 def generate_launch_description():
     rad_launch_share = get_package_share_directory('rad_launch')
@@ -87,6 +88,17 @@ def generate_launch_description():
         ]
     )
 
+    # --- 7. System Reset Node (30s delay - after all subsystems are up) ---
+    system_reset = TimerAction(
+        period=30.0,
+        actions=[Node(
+            package='rad_launch',
+            executable='system_reset_node',
+            name='system_reset_node',
+            output='log',
+        )]
+    )
+
     return LaunchDescription([
         gz_launch,
         simulation_launch,
@@ -94,4 +106,5 @@ def generate_launch_description():
         nav_launch,
         rad_stack,
         explore_launch,
+        system_reset,
     ])
