@@ -9,6 +9,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <mutex>
@@ -85,6 +86,9 @@ public:
         // Service Clients
         stop_explore_client_ = this->create_client<std_srvs::srv::Trigger>(stop_explore_srv_name_);
         start_explore_client_ = this->create_client<std_srvs::srv::Trigger>(start_explore_srv_name_);
+
+        // Physical escape publisher (direct cmd_vel when stuck in lethal space)
+    //    cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
 
         // Dynamic recovery timer
         recovery_timer_ = this->create_wall_timer(
@@ -374,11 +378,37 @@ private:
         }
         return found;
     }
-
+ /* 
+    void startPhysicalEscape()
+    {
+        // Drive backward slowly for ~2.5 s (≈0.25 m) to physically leave lethal space
+        // before the next navigate_to_pose goal is sent. is_recovering_ stays true
+        // during the escape so that recoveryTick() does not re-trigger navigation.
+        RCLCPP_WARN(this->get_logger(),
+            "Starting physical escape: backing up at 0.10 m/s for 2.5 s.");
+        escape_elapsed_ms_ = 0;
+        escape_vel_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(50),
+            [this]() {
+                if (escape_elapsed_ms_ < 2500) {
+                    geometry_msgs::msg::Twist twist;
+                    twist.linear.x = -0.10;
+                    cmd_vel_pub_->publish(twist);
+                    escape_elapsed_ms_ += 50;
+                } else {
+                    geometry_msgs::msg::Twist stop;
+                    cmd_vel_pub_->publish(stop);
+                    escape_vel_timer_->cancel();
+                    escape_vel_timer_.reset();
+                    is_recovering_ = false;
+                }
+            });
+    }
+*/
     void recoveryResultCallback(const GoalHandleNavigateToPose::WrappedResult & result)
     {
-        is_recovering_ = false;
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+            is_recovering_ = false;
             RCLCPP_INFO(this->get_logger(), "Successfully reached safe zone. Resuming exploration.");
             consecutive_recovery_failures_ = 0;
             failed_escape_points_.clear();
@@ -391,6 +421,9 @@ private:
                 "Blacklisting escape point (%.2f, %.2f). Will retry.",
                 static_cast<int>(result.code), consecutive_recovery_failures_,
                 last_escape_attempt_.x, last_escape_attempt_.y);
+            // Physical escape keeps is_recovering_ = true; recoveryTick will
+            // re-trigger once the escape timer clears is_recovering_.
+            // startPhysicalEscape();
         }
     }
 
@@ -437,7 +470,9 @@ private:
     rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
     rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr stop_explore_client_;
     rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr start_explore_client_;
+    //rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
     rclcpp::TimerBase::SharedPtr recovery_timer_;
+    //rclcpp::TimerBase::SharedPtr escape_vel_timer_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
     
@@ -453,6 +488,7 @@ private:
     std::mutex map_mutex_;
     std::mutex heatmap_mutex_;
     // Recovery escalation tracking
+    //int escape_elapsed_ms_{0};
     int consecutive_recovery_failures_;
     std::vector<geometry_msgs::msg::Point> failed_escape_points_;
     geometry_msgs::msg::Point last_escape_attempt_;

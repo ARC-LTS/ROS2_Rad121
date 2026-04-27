@@ -86,7 +86,8 @@ public:
 
         gp_client_ = this->create_client<ros2_rad_map::srv::GPPredict>("predict_gp");
         source_estimate_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/rad_heatmap/source_estimates", 10);
+            "/rad_heatmap/source_estimates",
+            rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
         // Published each time a stable elevated sample is committed.
         // The exploration node subscribes to this to know when to leave radiation mode.
         stable_source_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
@@ -673,12 +674,11 @@ private:
                         int8_t occ = map_copy.data[map_grid_y * map_copy.info.width + c];
                         bool is_occupied = (occ >= 50);
 
-                        // For free-space cells: trust GP when visible OR uncertainty is low (< 1.0 mrem/hr).
-                        // For occupied cells (shelves): the flood-fill never reaches them, so they are
-                        // never "visible". Use a more permissive threshold (< 2.0) since the GP is
-                        // extrapolating based on nearby corridor readings — still requires some confidence.
-                        float uncertainty_threshold = is_occupied ? 2.0f : 1.0f;
-                        if (is_visible || uncertainty < uncertainty_threshold) {
+                        // Free-space cells only get GP values when the flood-fill can reach them from
+                        // a sample position (is_visible). Occupied cells (shelves) are never reachable
+                        // by the flood-fill, so they get a fallback when uncertainty is low enough.
+                        // This prevents the GP from extrapolating into unexplored frontier areas.
+                        if (is_visible || (is_occupied && uncertainty < 2.0f)) {
                             hist_mean_occluded.at<float>(r, c) = hist_mean_raw.at<float>(r, c);
                             hist_std_occluded.at<float>(r, c) = hist_std_raw.at<float>(r, c);
                         }

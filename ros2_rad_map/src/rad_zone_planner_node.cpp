@@ -43,7 +43,9 @@ public:
         map_qos.transient_local().reliable();
 
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(map_topic, map_qos, std::bind(&RadZonePlannerNode::mapCallback, this, std::placeholders::_1));
-        heatmap_sub_ = this->create_subscription<sensor_msgs::msg::Image>(heatmap_topic, 10, std::bind(&RadZonePlannerNode::heatmapCallback, this, std::placeholders::_1));
+        heatmap_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+            heatmap_topic, rclcpp::QoS(rclcpp::KeepLast(1)),
+            std::bind(&RadZonePlannerNode::heatmapCallback, this, std::placeholders::_1));
         peak_sub_ = this->create_subscription<ros2_rad_map::msg::RadZoneArray>(
             peaks_topic, 10,
             std::bind(&RadZonePlannerNode::peakCallback, this, std::placeholders::_1));
@@ -130,9 +132,18 @@ private:
         {
             std::lock_guard<std::mutex> lock(peak_mutex_);
             if(latest_peaks_.empty()) {
+                // Publish a cleared marker array so rviz2 sees a consistent
+                // update on this topic whenever the costmap updates.
+                visualization_msgs::msg::MarkerArray empty_array;
+                visualization_msgs::msg::Marker clear_marker;
+                clear_marker.header.frame_id = map_frame_;
+                clear_marker.header.stamp = this->get_clock()->now();
+                clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+                empty_array.markers.push_back(clear_marker);
+                zone_marker_pub_->publish(empty_array);
                 return;
             }
-            
+
             double res = map_info_.resolution;
             double origin_x = map_info_.origin.position.x;
             double origin_y = map_info_.origin.position.y;
