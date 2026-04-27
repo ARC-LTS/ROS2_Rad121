@@ -144,6 +144,9 @@ private:
         peak_finder_client_->async_send_request(request, [this](rclcpp::Client<ros2_rad_map::srv::FindPeaks>::SharedFuture future) {
             try {
                 auto response = future.get();
+                // Single timestamp for all markers in this response batch so rviz2
+                // sees a coherent update across every namespace simultaneously.
+                auto stamp = this->get_clock()->now();
 
                 std::lock_guard<std::mutex> lock(data_mutex_);
 
@@ -208,13 +211,13 @@ private:
                 }
 
                 auto zone_array_msg = std::make_unique<ros2_rad_map::msg::RadZoneArray>();
-                zone_array_msg->header.stamp = this->get_clock()->now();
+                zone_array_msg->header.stamp = stamp;
                 zone_array_msg->header.frame_id = map_frame_;
                 zone_array_msg->zones = zones_to_publish;
 
                 visualization_msgs::msg::MarkerArray marker_array;
                 visualization_msgs::msg::Marker clear_marker;
-                clear_marker.header.stamp = zone_array_msg->header.stamp;
+                clear_marker.header.stamp = stamp;
                 clear_marker.header.frame_id = map_frame_;
                 clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
                 marker_array.markers.push_back(clear_marker);
@@ -227,7 +230,7 @@ private:
 
                 for (const auto& zone : zones_to_publish) {
                     visualization_msgs::msg::Marker point_marker;
-                    point_marker.header.stamp = zone_array_msg->header.stamp;
+                    point_marker.header.stamp = stamp;
                     point_marker.header.frame_id = map_frame_;
                     point_marker.ns = "radiation_peaks";
                     point_marker.id = marker_id++;
@@ -242,7 +245,7 @@ private:
                     marker_array.markers.push_back(point_marker);
 
                     visualization_msgs::msg::Marker text_marker;
-                    text_marker.header.stamp = zone_array_msg->header.stamp;
+                    text_marker.header.stamp = stamp;
                     text_marker.header.frame_id = map_frame_;
                     text_marker.ns = "radiation_peak_labels";
                     text_marker.id = marker_id++;
@@ -279,7 +282,7 @@ private:
 
                 if (!confirmed_zones.empty()) {
                     auto confirmed_msg = std::make_unique<ros2_rad_map::msg::RadZoneArray>();
-                    confirmed_msg->header.stamp = this->get_clock()->now();
+                    confirmed_msg->header.stamp = stamp;
                     confirmed_msg->header.frame_id = map_frame_;
                     confirmed_msg->zones = confirmed_zones;
                     confirmed_sources_pub_->publish(std::move(confirmed_msg));
@@ -287,7 +290,7 @@ private:
                     // Distinct visual: larger solid-red cylinders with count annotation
                     visualization_msgs::msg::MarkerArray confirmed_markers;
                     visualization_msgs::msg::Marker conf_clear;
-                    conf_clear.header.stamp = this->get_clock()->now();
+                    conf_clear.header.stamp = stamp;
                     conf_clear.header.frame_id = map_frame_;
                     conf_clear.action = visualization_msgs::msg::Marker::DELETEALL;
                     confirmed_markers.markers.push_back(conf_clear);
@@ -304,7 +307,7 @@ private:
 
                         // Cylinder body
                         visualization_msgs::msg::Marker cyl;
-                        cyl.header.stamp = this->get_clock()->now();
+                        cyl.header.stamp = stamp;
                         cyl.header.frame_id = map_frame_;
                         cyl.ns = "confirmed_sources";
                         cyl.id = conf_id++;
@@ -322,7 +325,7 @@ private:
 
                         // Text: label, radiation value, detection count
                         visualization_msgs::msg::Marker txt;
-                        txt.header.stamp = this->get_clock()->now();
+                        txt.header.stamp = stamp;
                         txt.header.frame_id = map_frame_;
                         txt.ns = "confirmed_source_labels";
                         txt.id = conf_id++;

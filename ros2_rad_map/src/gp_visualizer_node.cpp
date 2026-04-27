@@ -99,8 +99,8 @@ private:
         try {
             geometry_msgs::msg::PoseStamped pose_in_sensor;
             pose_in_sensor.header.frame_id = sensor_frame_;
-            pose_in_sensor.header.stamp = this->get_clock()->now();
-            tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(100));
+            pose_in_sensor.header.stamp = rclcpp::Time(0);
+            tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(500));
 
             std::lock_guard<std::mutex> lock(data_mutex_);
             historical_samples_.push_back({pose_in_map.pose.position.x, pose_in_map.pose.position.y, msg->data[1]});
