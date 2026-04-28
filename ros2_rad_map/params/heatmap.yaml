@@ -1,6 +1,6 @@
 rad_heatmap_node:
   ros__parameters:
-    use_sim_time: True
+    use_sim_time: False
     sensor_frame: "base_link"
     map_frame: "map"
     # output_directory: ""  # Defaults to /tmp; override via launch argument to set a persistent output path

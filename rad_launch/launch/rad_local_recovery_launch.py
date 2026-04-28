@@ -17,5 +17,11 @@ def generate_launch_description():
             name='local_recovery_node',
             parameters=[param_file],
             output='screen'
-        )
+        ),
+        Node(
+            package='rad_local_recovery',
+            executable='stuck_escape_node',
+            name='stuck_escape_node',
+            output='screen'
+        ),
     ])

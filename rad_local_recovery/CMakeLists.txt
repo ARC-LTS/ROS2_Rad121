@@ -19,6 +19,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(ros2_rad_map REQUIRED)
+find_package(action_msgs REQUIRED)
 
 add_executable(local_recovery_node src/local_recovery_node.cpp)
 ament_target_dependencies(local_recovery_node
@@ -36,8 +37,19 @@ ament_target_dependencies(local_recovery_node
   ros2_rad_map
 )
 
+add_executable(stuck_escape_node src/stuck_escape_node.cpp)
+ament_target_dependencies(stuck_escape_node
+  rclcpp
+  rclcpp_action
+  nav_msgs
+  nav2_msgs
+  geometry_msgs
+  action_msgs
+)
+
 install(TARGETS
   local_recovery_node
+  stuck_escape_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
