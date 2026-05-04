@@ -1,7 +1,7 @@
 rad_heatmap_node:
   ros__parameters:
     use_sim_time: True
-    sensor_frame: "base_link"
+    sensor_frame: "body"
     map_frame: "map"
     # output_directory: ""  # Defaults to /tmp; override via launch argument to set a persistent output path
 
@@ -21,7 +21,7 @@ rad_heatmap_node:
 
 rad_mapper_node:
   ros__parameters:
-    target_frame: "base_link"
+    target_frame: "body"
     source_frame: "odom"
 
 gp_predictor_node:
@@ -42,7 +42,7 @@ gp_predictor_node:
 
 peak_finder_client_node:
   ros__parameters:
-    sensor_frame: "base_link"
+    sensor_frame: "body"
     map_frame: "map"
     num_starts: 30
     marker_scale: 0.5

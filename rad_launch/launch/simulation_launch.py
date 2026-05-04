@@ -10,7 +10,7 @@ def generate_launch_description():
     num_random_sources = LaunchConfiguration('num_random_sources_to_spawn', default='3')
 
     rad_simulation_share = get_package_share_directory('rad_simulation')
-    clearpath_gz_share = get_package_share_directory('clearpath_gz')
+    # clearpath_gz_share = get_package_share_directory('clearpath_gz')
 
     # Path to the unified parameter file
     param_file = os.path.join(
@@ -19,12 +19,12 @@ def generate_launch_description():
         'sensor_simulator.yaml'
     )
 
-    battery_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(clearpath_gz_share, 'launch', 'battery_launch.py')
-        ),
-        launch_arguments={'battery_topic': '/battery_state'}.items() # Add any needed overrides
-    )
+    #battery_launch = IncludeLaunchDescription(
+    #    PythonLaunchDescriptionSource(
+    #        os.path.join(clearpath_gz_share, 'launch', 'battery_launch.py')
+    #    ),
+    #    launch_arguments={'battery_topic': '/battery_state'}.items() # Add any needed overrides
+    #)
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -55,5 +55,5 @@ def generate_launch_description():
             output='screen',
             parameters=[param_file]
         ),
-        battery_launch,
+        # battery_launch,
     ])
