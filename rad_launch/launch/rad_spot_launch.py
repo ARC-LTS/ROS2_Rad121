@@ -1,0 +1,124 @@
+import os
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, TimerAction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
+
+# Phase delays (seconds from launch start).
+#
+# The original 5-second gaps were too short: DDS discovery traffic from the
+# simulation nodes and CPU contention from rad_field_server starved the
+# Velodyne UDP socket, so rtabmap never got consistent lidar data.
+#
+# Critical gap: slam -> nav2 must be ≥30 s so rtabmap can establish stable
+# odometry before nav2 adds another burst of node startups and DDS traffic.
+_T_SIM   =  5   # simulation nodes: lightweight, start early
+_T_SLAM  = 20   # slam/velodyne: wait for simulation DDS storm to settle
+_T_NAV2  = 55   # nav2: wait for rtabmap to have a stable map (35 s window)
+_T_RAD   = 70   # radiation stack: 15 s after nav2
+_T_EXPL  = 85   # exploration: 15 s after rad stack
+_T_RESET = 120  # system reset: only after the full stack is stable
+
+def generate_launch_description():
+    rad_launch_share = get_package_share_directory('rad_launch')
+    spot_robot_share = get_package_share_directory('spot_robot')
+    wfd_share = get_package_share_directory('explore_lite')
+
+    # Stale FastDDS SHM lock files from a previous session cause
+    # "Failed init_port fastrtps_port*: open_and_lock_file failed" errors when
+    # new nodes start up. The resulting DDS participant renegotiation disrupts
+    # all active topic subscriptions, including rtabmap's /velodyne_points feed.
+    cleanup_dds_shm = ExecuteProcess(
+        cmd=['bash', '-c',
+             'find /tmp -maxdepth 1 -name "fastrtps_port*" -delete 2>/dev/null; '
+             'find /dev/shm -maxdepth 1 -name "fastrtps_*" -delete 2>/dev/null; '
+             'true'],
+        output='log',
+        name='cleanup_dds_shm',
+    )
+
+    simulation_launch = TimerAction(
+        period=float(_T_SIM),
+        actions=[IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(rad_launch_share, 'launch', 'simulation_launch.py')
+            )
+        )]
+    )
+
+    slam_launch = TimerAction(
+        period=float(_T_SLAM),
+        actions=[IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(spot_robot_share, 'launch', 'slam.launch.py')
+            ),
+            launch_arguments={'output': 'log'}.items()
+        )]
+    )
+
+    nav_launch = TimerAction(
+        period=float(_T_NAV2),
+        actions=[IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(spot_robot_share, 'launch', 'nav2.launch.py')
+            )
+        )]
+    )
+
+    rad_stack = TimerAction(
+        period=float(_T_RAD),
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(rad_launch_share, 'launch', 'gp_predictor_launch.py')
+                )
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(rad_launch_share, 'launch', 'rad_heatmap_launch.py')
+                )
+            ),
+            #IncludeLaunchDescription(
+            #    PythonLaunchDescriptionSource(
+            #        os.path.join(rad_launch_share, 'launch', 'rad_costmap_visualizer_launch.py')
+            #    )
+            #),
+        ]
+    )
+
+    explore_launch = TimerAction(
+        period=float(_T_EXPL),
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(wfd_share, 'launch', 'explore.launch.py')
+                )
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(rad_launch_share, 'launch', 'rad_local_recovery_launch.py')
+                )
+            ),
+        ]
+    )
+
+    system_reset = TimerAction(
+        period=float(_T_RESET),
+        actions=[Node(
+            package='rad_launch',
+            executable='system_reset_node',
+            name='system_reset_node',
+            output='log',
+        )]
+    )
+
+    return LaunchDescription([
+        cleanup_dds_shm,
+        simulation_launch,
+        slam_launch,
+        nav_launch,
+        rad_stack,
+        explore_launch,
+        system_reset,
+    ])
