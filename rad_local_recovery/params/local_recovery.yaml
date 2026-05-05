@@ -4,7 +4,7 @@ local_recovery_node:
     acute_dose_rate_mrem_hr: 10.0   # hard evacuation trigger
     safe_dose_threshold_mrem_hr: 1.0
     recovery_search_distance_m: 15.0
-    robot_base_frame: "base_link"
+    robot_base_frame: ""
     map_frame: "map"
     fallback_retreat_distance_m: 3.0
     return_to_origin: false

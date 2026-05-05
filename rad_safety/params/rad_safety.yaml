@@ -9,5 +9,5 @@ rad_safety_monitor_node:
     # Number of consecutive dose readings to average before triggering;
     # prevents false retreats from transient sensor spikes.
     dose_smoothing_window: 5
-    robot_base_frame: "base_link"
+    robot_base_frame: ""
     map_frame: "map"
