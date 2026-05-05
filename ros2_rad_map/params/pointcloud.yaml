@@ -5,7 +5,7 @@ rad_pointcloud_node:
     lidar_topic: "/velodyne_points"             
     output_topic: "/rad_pointcloud_accumulated" 
     source_estimate_topic: "/rad_source_estimate"
-    sensor_frame: "base_link"             
+    sensor_frame: ""             
     map_frame: "map"                      
     # save_ply_directory: ""  # Defaults to /tmp; override via launch argument to set a persistent output path
     save_ply_base_name: "rad_cloud"
