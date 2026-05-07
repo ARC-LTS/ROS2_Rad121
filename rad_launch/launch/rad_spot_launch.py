@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, IncludeLaunchDescription, TimerAction
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
@@ -15,10 +15,10 @@ from launch_ros.actions import Node
 # odometry before nav2 adds another burst of node startups and DDS traffic.
 _T_SIM   =  5   # simulation nodes: lightweight, start early
 _T_SLAM  = 20   # slam/velodyne: wait for simulation DDS storm to settle
-_T_NAV2  = 55   # nav2: wait for rtabmap to have a stable map (35 s window)
-_T_RAD   = 70   # radiation stack: 15 s after nav2
-_T_EXPL  = 85   # exploration: 15 s after rad stack
-_T_RESET = 120  # system reset: only after the full stack is stable
+_T_NAV2  = 70   # nav2: 50 s after SLAM — extra time for RTAB-Map CPU spike to settle
+_T_RAD   = 90   # radiation stack: 20 s after nav2
+_T_EXPL  = 105  # exploration: 15 s after rad stack
+_T_RESET = 140  # system reset: only after the full stack is stable
 
 def generate_launch_description():
     rad_launch_share = get_package_share_directory('rad_launch')
@@ -29,6 +29,15 @@ def generate_launch_description():
     # "Failed init_port fastrtps_port*: open_and_lock_file failed" errors when
     # new nodes start up. The resulting DDS participant renegotiation disrupts
     # all active topic subscriptions, including rtabmap's /velodyne_points feed.
+    # Force FastDDS to use UDP-only transport with large buffers and localhost
+    # unicast discovery. This prevents the endpoint re-registration storm that
+    # occurs when the local_costmap creates 7+ subscriptions simultaneously and
+    # severs the lifecycle_manager's get_state service connection.
+    set_fastdds_profile = SetEnvironmentVariable(
+        name='FASTRTPS_DEFAULT_PROFILES_FILE',
+        value='/ros_ws/fastdds_nav2.xml',
+    )
+
     cleanup_dds_shm = ExecuteProcess(
         cmd=['bash', '-c',
              'find /tmp -maxdepth 1 -name "fastrtps_port*" -delete 2>/dev/null; '
@@ -49,12 +58,27 @@ def generate_launch_description():
 
     slam_launch = TimerAction(
         period=float(_T_SLAM),
-        actions=[IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                os.path.join(spot_robot_share, 'launch', 'slam.launch.py')
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(spot_robot_share, 'launch', 'slam.launch.py')
+                ),
+                launch_arguments={'output': 'log'}.items()
             ),
-            launch_arguments={'output': 'log'}.items()
-        )]
+            # Spot terrain grid → voxelized point cloud for small-obstacle detection.
+            # Started with SLAM so the robot connection is already established and
+            # the odom frame exists before nav2 tries to subscribe to the topic.
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(spot_robot_share, 'launch', 'publish_local_grid.launch.py')
+                )
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(spot_robot_share, 'launch', 'voxelize.launch.py')
+                )
+            ),
+        ]
     )
 
     nav_launch = TimerAction(
@@ -114,6 +138,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        set_fastdds_profile,
         cleanup_dds_shm,
         simulation_launch,
         slam_launch,
