@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
@@ -24,28 +24,6 @@ def generate_launch_description():
     rad_launch_share = get_package_share_directory('rad_launch')
     spot_robot_share = get_package_share_directory('spot_robot')
     wfd_share = get_package_share_directory('explore_lite')
-
-    # Stale FastDDS SHM lock files from a previous session cause
-    # "Failed init_port fastrtps_port*: open_and_lock_file failed" errors when
-    # new nodes start up. The resulting DDS participant renegotiation disrupts
-    # all active topic subscriptions, including rtabmap's /velodyne_points feed.
-    # Force FastDDS to use UDP-only transport with large buffers and localhost
-    # unicast discovery. This prevents the endpoint re-registration storm that
-    # occurs when the local_costmap creates 7+ subscriptions simultaneously and
-    # severs the lifecycle_manager's get_state service connection.
-    set_fastdds_profile = SetEnvironmentVariable(
-        name='FASTRTPS_DEFAULT_PROFILES_FILE',
-        value='/ros_ws/fastdds_nav2.xml',
-    )
-
-    cleanup_dds_shm = ExecuteProcess(
-        cmd=['bash', '-c',
-             'find /tmp -maxdepth 1 -name "fastrtps_port*" -delete 2>/dev/null; '
-             'find /dev/shm -maxdepth 1 -name "fastrtps_*" -delete 2>/dev/null; '
-             'true'],
-        output='log',
-        name='cleanup_dds_shm',
-    )
 
     simulation_launch = TimerAction(
         period=float(_T_SIM),
@@ -76,6 +54,14 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(spot_robot_share, 'launch', 'voxelize.launch.py')
+                )
+            ),
+            # Merge all 6 depth-camera point clouds into /cloud_full (body frame,
+            # 0–3 m range). Covers the Velodyne's near-range dead zone and feeds
+            # the Nav2 obstacle_layer sources configured in nav2_params.yaml.
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(spot_robot_share, 'launch', 'publish_full_pointcloud.launch.py')
                 )
             ),
         ]
@@ -138,8 +124,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        set_fastdds_profile,
-        cleanup_dds_shm,
         simulation_launch,
         slam_launch,
         nav_launch,
