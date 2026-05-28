@@ -1,0 +1,12 @@
+# Known radiation source locations for surveillance mode.
+# Provide the map-frame (x, y) coordinates and a human-readable label for each source.
+# Pass this file to the zone_publisher_node via the zones_file parameter.
+#
+# Example:
+zones:
+  - label: "Source_A"
+    x: -4.17
+    y: -12.87
+  - label: "Source_B"
+    x: -10.93
+    y: -15.54
