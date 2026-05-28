@@ -1,8 +1,10 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
@@ -10,6 +12,14 @@ def generate_launch_description():
     gz_share = get_package_share_directory('clearpath_gz')
     nav_share = get_package_share_directory('clearpath_nav2_demos')
     wfd_share = get_package_share_directory('explore_lite')
+    orbit_surveys_arg = DeclareLaunchArgument(
+        'orbit_surveys',
+        default_value='false',
+        description='Enable orbital survey of discovered radiation zones. '
+                    'When true, the zone_explorer_node manages explore_lite '
+                    'and circles each discovered source before resuming exploration.',
+    )
+    orbit_surveys = LaunchConfiguration('orbit_surveys')
 
     # --- 1. Core Gazebo Simulation (Husky robot) ---
     gz_launch = IncludeLaunchDescription(
@@ -85,6 +95,24 @@ def generate_launch_description():
                     os.path.join(rad_launch_share, 'launch', 'rad_local_recovery_launch.py')
                 )
             ),
+            # Optional: orbital survey of discovered radiation zones.
+            # Disabled by default; enable with orbit_surveys:=true.
+            Node(
+                package='rad_nav_behavior',
+                executable='zone_explorer_node',
+                name='zone_explorer_node',
+                output='screen',
+                parameters=[{
+                    'mode': 'exploration',
+                    'zones_topic': '/radiation_zones',
+                    'survey_radius_m': 1.5,
+                    'survey_waypoints': 6,
+                    'dwell_per_waypoint_s': 2,
+                    'explore_start_service': 'explore_node/start',
+                    'explore_stop_service': 'explore_node/stop',
+                }],
+                condition=IfCondition(orbit_surveys),
+            ),
         ]
     )
 
@@ -100,6 +128,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        orbit_surveys_arg,
         gz_launch,
         simulation_launch,
         slam_launch,
