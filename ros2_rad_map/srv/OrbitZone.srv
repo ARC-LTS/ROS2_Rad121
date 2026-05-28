@@ -1,0 +1,8 @@
+# Request: zone center to orbit
+string label   # human-readable name; auto-generated if left empty
+float64 x
+float64 y
+---
+# Response
+bool success
+string message

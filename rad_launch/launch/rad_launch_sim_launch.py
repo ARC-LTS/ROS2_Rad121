@@ -113,6 +113,23 @@ def generate_launch_description():
                 }],
                 condition=IfCondition(orbit_surveys),
             ),
+            # zone_publisher_node always launches with zone_explorer_node so
+            # sync_from_field_server is available regardless of operating mode.
+            Node(
+                package='rad_nav_behavior',
+                executable='zone_publisher_node.py',
+                name='zone_publisher_node',
+                output='screen',
+                parameters=[{
+                    'zones_file': 'none',
+                    'zones_topic': '/radiation_zones',
+                    'publish_rate_hz': 1.0,
+                    'saved_sources_file': os.path.join(
+                        get_package_share_directory('rad_simulation'),
+                        'params', 'saved_sources.yaml'),
+                }],
+                condition=IfCondition(orbit_surveys),
+            ),
         ]
     )
 

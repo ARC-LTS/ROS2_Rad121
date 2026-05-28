@@ -9,7 +9,9 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('rad_nav_behavior')
+    rad_sim_share = get_package_share_directory('rad_simulation')
     default_zones_file = os.path.join(pkg_share, 'params', 'known_sources.yaml')
+    default_saved_sources = os.path.join(rad_sim_share, 'params', 'saved_sources.yaml')
 
     mode_arg = DeclareLaunchArgument(
         'mode',
@@ -19,7 +21,7 @@ def generate_launch_description():
     )
     zones_file_arg = DeclareLaunchArgument(
         'zones_file',
-        default_value=default_zones_file,
+        default_value='none',
         description='Path to a YAML file listing known radiation source locations '
                     '(surveillance mode only). Format: zones: [{label, x, y}, ...]',
     )
@@ -29,9 +31,23 @@ def generate_launch_description():
 
     is_surveillance = PythonExpression(["'", mode, "' == 'surveillance'"])
 
+    # zone_publisher_node runs in all modes so that sync_from_field_server is
+    # always available.  In surveillance mode it starts pre-loaded from
+    # zones_file; in exploration mode it starts empty and waits for a sync call.
+    zone_publisher_node = Node(
+        package='rad_nav_behavior',
+        executable='zone_publisher_node.py',
+        name='zone_publisher_node',
+        output='screen',
+        parameters=[{
+            'zones_file': zones_file,
+            'zones_topic': '/radiation_zones',
+            'publish_rate_hz': 1.0,
+            'saved_sources_file': default_saved_sources,
+        }],
+    )
+
     # --- Exploration mode ---
-    # Frontier navigation finds sources; zone_explorer pauses/resumes explore_lite
-    # around each orbital survey automatically.
     exploration_node = Node(
         package='rad_nav_behavior',
         executable='zone_explorer_node',
@@ -50,22 +66,6 @@ def generate_launch_description():
     )
 
     # --- Surveillance mode ---
-    # zone_publisher_node reads the YAML and publishes source locations as a
-    # RadZoneArray topic.  zone_explorer_node subscribes to that same topic and
-    # orbits each source without entering the hotspot center.
-    zone_publisher_node = Node(
-        package='rad_nav_behavior',
-        executable='zone_publisher_node.py',
-        name='zone_publisher_node',
-        output='screen',
-        parameters=[{
-            'zones_file': zones_file,
-            'zones_topic': '/radiation_zones',
-            'publish_rate_hz': 1.0,
-        }],
-        condition=IfCondition(is_surveillance),
-    )
-
     surveillance_node = Node(
         package='rad_nav_behavior',
         executable='zone_explorer_node',
@@ -84,7 +84,7 @@ def generate_launch_description():
     return LaunchDescription([
         mode_arg,
         zones_file_arg,
-        exploration_node,
         zone_publisher_node,
+        exploration_node,
         surveillance_node,
     ])

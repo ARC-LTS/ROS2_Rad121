@@ -37,6 +37,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/FindPeaks.srv"
   "srv/GetHeatmaps.srv"
   "srv/SaveMaps.srv"
+  "srv/OrbitZone.srv"
+  "srv/GoToZone.srv"
   "msg/RadZone.msg"
   "msg/RadZoneArray.msg"
   DEPENDENCIES geometry_msgs std_msgs

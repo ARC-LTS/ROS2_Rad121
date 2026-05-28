@@ -1,12 +1,13 @@
 # Known radiation source locations for surveillance mode.
-# Provide the map-frame (x, y) coordinates and a human-readable label for each source.
+# Populated from rad_simulation/params/saved_sources.yaml (x, y per source; intensity omitted).
 # Pass this file to the zone_publisher_node via the zones_file parameter.
-#
-# Example:
 zones:
-  - label: "Source_A"
-    x: -4.17
-    y: -12.87
-  - label: "Source_B"
-    x: -10.93
-    y: -15.54
+  - label: "Source_1"
+    x: -2.0131621360778809
+    y: -5.1955900192260742
+  - label: "Source_2"
+    x: 12.548740386962891
+    y: 17.983327865600586
+  - label: "Source_3"
+    x: -9.0850648880004883
+    y: -23.337661743164062

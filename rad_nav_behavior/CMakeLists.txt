@@ -25,6 +25,10 @@ ament_target_dependencies(zone_explorer_node
   std_srvs
 )
 
+target_link_libraries(zone_explorer_node
+  ros2_rad_map::ros2_rad_map__rosidl_typesupport_cpp
+)
+
 install(TARGETS
   zone_explorer_node
   DESTINATION lib/${PROJECT_NAME}
