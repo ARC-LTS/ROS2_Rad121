@@ -46,19 +46,19 @@ def generate_launch_description():
         )
     )
 
-#    spot_robot_share = get_package_share_directory('spot_robot')
-#    rad_nav2_launch = IncludeLaunchDescription(
-#        PythonLaunchDescriptionSource(
-#            os.path.join(spot_robot_share, 'launch', 'nav2.launch.py')
-#        )
-#    )
+    spot_robot_share = get_package_share_directory('spot_robot')
+    rad_nav2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(spot_robot_share, 'launch', 'nav2.launch.py')
+        )
+    )
 
     # --- Return the master launch description ---
     return LaunchDescription([
-#        simulation_launch,
+        simulation_launch,
         gp_predictor_launch,
         rad_heatmap_launch,
-#        rad_local_recovery_launch,
-#        rad_costmap_visualizer_launch,
-    #    rad_nav2_launch,
+        rad_local_recovery_launch,
+        rad_costmap_visualizer_launch,
+        rad_nav2_launch,
     ])
