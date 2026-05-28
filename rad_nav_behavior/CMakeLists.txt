@@ -12,6 +12,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(ros2_rad_map REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 add_executable(zone_explorer_node src/zone_explorer_node.cpp)
 
@@ -21,6 +22,7 @@ ament_target_dependencies(zone_explorer_node
   ros2_rad_map
   geometry_msgs
   nav2_msgs
+  std_srvs
 )
 
 install(TARGETS
@@ -30,7 +32,13 @@ install(TARGETS
 
 install(DIRECTORY
   launch
+  params
   DESTINATION share/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/zone_publisher_node.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)
