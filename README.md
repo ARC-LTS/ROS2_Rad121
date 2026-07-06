@@ -77,7 +77,7 @@ zones:
 2.  **Clone the repository** into your ROS 2 workspace:
     ```bash
     mkdir -p ~/ros_ws/src && cd ~/ros_ws/src
-    git clone https://git.turingnet.work/doobs/ROS2_Rad121.git
+    git clone https://github.com/ARC-LTS/ROS2_Rad121.git
     ```
 
 3.  **Pull required source dependencies** (including `explore-ros2`):

@@ -1,9 +1,9 @@
 repositories:
   explore-ros2:
     type: git
-    url: https://git.turingnet.work/lts/explore-ros2
+    url: https://github.com/ARC-LTS/explore-ros2
     version: main
   navigation:
     type: git
-    url: https://git.turingnet.work/lts/navigation
+    url: https://github.com/ARC-LTS/navigation
     version: main
