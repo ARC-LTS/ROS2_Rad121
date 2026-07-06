@@ -161,9 +161,14 @@ private:
 
     void callExploreStart()
     {
-        if (!explore_start_client_->wait_for_service(std::chrono::seconds(10))) {
+        // Non-blocking check (mirrors callExploreStop() below) instead of a
+        // blocking wait_for_service(10s), which used to freeze this node's
+        // entire executor - zone queue processing, action result callbacks,
+        // orbit timeout timers - for up to 10 seconds if the service was
+        // momentarily unavailable.
+        if (!explore_start_client_->service_is_ready()) {
             RCLCPP_WARN(this->get_logger(),
-                "explore start service unavailable after 10s; frontier navigation may not resume.");
+                "explore start service not ready; frontier navigation may not resume.");
             return;
         }
         explore_start_client_->async_send_request(

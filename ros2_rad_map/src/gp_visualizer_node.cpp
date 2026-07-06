@@ -8,9 +8,15 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include <vector>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include "std_msgs/msg/float64.hpp"
+
+// Historical sample buffer cap: previously unbounded, growing (and getting
+// copied wholesale + re-marshalled into a service request) for the entire
+// mission. Mirrors gp_predictor_node.py's equivalent 1000-sample cap.
+static constexpr size_t kMaxHistoricalSamples = 1000;
 
 struct RadSample {
     double x, y, value;
@@ -100,10 +106,16 @@ private:
             geometry_msgs::msg::PoseStamped pose_in_sensor;
             pose_in_sensor.header.frame_id = sensor_frame_;
             pose_in_sensor.header.stamp = rclcpp::Time(0);
-            tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(500));
+            // No timeout (defaults to 0): avoids a 500ms blocking wait on
+            // every /rad message. TF is virtually always already available by
+            // the time a sample arrives; if not, skip this one sample.
+            tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_);
 
             std::lock_guard<std::mutex> lock(data_mutex_);
             historical_samples_.push_back({pose_in_map.pose.position.x, pose_in_map.pose.position.y, msg->data[1]});
+            if (historical_samples_.size() > kMaxHistoricalSamples) {
+                historical_samples_.pop_front();
+            }
         } catch (const tf2::TransformException &ex) {
             RCLCPP_WARN(this->get_logger(), "TF Error for logging sample: %s", ex.what());
         }
@@ -132,7 +144,7 @@ private:
         }
 
         nav_msgs::msg::OccupancyGrid map_copy;
-        std::vector<RadSample> samples_copy;
+        std::deque<RadSample> samples_copy;
 
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
@@ -242,7 +254,7 @@ private:
     bool is_updating_{false};
     nav_msgs::msg::OccupancyGrid map_;
     bool map_received_{false};
-    std::vector<RadSample> historical_samples_;
+    std::deque<RadSample> historical_samples_;
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;

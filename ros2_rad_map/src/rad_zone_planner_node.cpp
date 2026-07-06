@@ -97,16 +97,17 @@ private:
 
         cv::Mat heatmap_raw = cv_ptr->image;
         if (heatmap_raw.rows == static_cast<int>(map_to_modify->info.height) && heatmap_raw.cols == static_cast<int>(map_to_modify->info.width)) {
-            for (int r = 0; r < heatmap_raw.rows; ++r) {
-                for (int c = 0; c < heatmap_raw.cols; ++c) {
-                    if (heatmap_raw.at<float>(r, c) > safety_threshold_mrem_hr_) {
-                        unsigned int index = r * map_to_modify->info.width + c;
-                        if (index < map_to_modify->data.size()) {
-                            map_to_modify->data[index] = 100; // LETHAL_OBSTACLE
-                        }
-                    }
-                }
-            }
+            // Vectorized replacement for a manual per-pixel .at<float>() scan
+            // over the full map. cv::compare builds the threshold mask in one
+            // pass; grid_view wraps the OccupancyGrid's own backing storage
+            // directly (int8_t == CV_8SC1, same row-major layout), so setTo()
+            // writes straight into map_to_modify->data with no extra copy.
+            cv::Mat above_threshold_mask;
+            cv::compare(heatmap_raw, safety_threshold_mrem_hr_, above_threshold_mask, cv::CMP_GT);
+
+            cv::Mat grid_view(map_to_modify->info.height, map_to_modify->info.width, CV_8SC1,
+                               map_to_modify->data.data());
+            grid_view.setTo(cv::Scalar(100), above_threshold_mask); // LETHAL_OBSTACLE
         } else {
             RCLCPP_WARN(this->get_logger(), "Heatmap dimensions (%d, %d) do not match map dimensions (%d, %d). Cannot generate radiation costmap.",
                 heatmap_raw.cols, heatmap_raw.rows, map_to_modify->info.width, map_to_modify->info.height);

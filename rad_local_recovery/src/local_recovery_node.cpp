@@ -429,7 +429,11 @@ private:
 
     void callTriggerService(rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr client, const std::string& label)
     {
-        if (!client->wait_for_service(std::chrono::seconds(1))) {
+        // Non-blocking check instead of wait_for_service(1s): this is called
+        // from triggerRecovery(), a radiation-emergency path, and a 1s block
+        // on the executor here stalls rad/costmap/heatmap callbacks and the
+        // nav action result callback at exactly the wrong moment.
+        if (!client->service_is_ready()) {
             RCLCPP_ERROR(this->get_logger(), "Service %s not available!", client->get_service_name());
             return;
         }

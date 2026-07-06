@@ -71,7 +71,17 @@ class GPPredictor(Node):
         self.data_lock = threading.Lock()
         self.current_background = 0.0
         self._rad_smooth_buf = []   # Rolling window for pre-smoothing raw readings
-        
+
+        # Warm-start cache: last successfully optimized hyperparameters.
+        # _build_gp_model seeds new models from these instead of fixed defaults so
+        # optimize() converges in far fewer L-BFGS iterations each call, and so
+        # find_peaks_callback (which never calls optimize() itself) searches against
+        # a fitted model instead of default/untrained hyperparameters.
+        self._warm_lengthscale = None
+        self._warm_variance = None
+        self._warm_noise_variance = None
+        self._warm_rho = None
+
         # Multi-fidelity state
         self.gp_lo = None
         self.load_low_fi_model()
@@ -231,21 +241,31 @@ class GPPredictor(Node):
         kernel_type = self.get_parameter('kernel.type').get_parameter_value().string_value
         lengthscale = self.get_parameter('kernel.lengthscale').get_parameter_value().double_value
 
+        # Warm-start from the last optimized fit (if any) instead of always
+        # starting L-BFGS cold from the configured defaults. Skipped when
+        # fix_lengthscale is set, since that value must stay exactly as configured.
+        fix_lengthscale = self.get_parameter('fix_lengthscale').get_parameter_value().bool_value
+        init_lengthscale = lengthscale if (fix_lengthscale or self._warm_lengthscale is None) else self._warm_lengthscale
+        init_variance = 1. if self._warm_variance is None else self._warm_variance
+
         if kernel_type.lower() == 'matern52':
-            kernel = GPy.kern.Matern52(input_dim=2, variance=1., lengthscale=lengthscale)
+            kernel = GPy.kern.Matern52(input_dim=2, variance=init_variance, lengthscale=init_lengthscale)
         elif kernel_type.lower() == 'matern32':
-            kernel = GPy.kern.Matern32(input_dim=2, variance=1., lengthscale=lengthscale)
+            kernel = GPy.kern.Matern32(input_dim=2, variance=init_variance, lengthscale=init_lengthscale)
         elif kernel_type.lower() == 'exponential' or kernel_type.lower() == 'matern12':
-            kernel = GPy.kern.Exponential(input_dim=2, variance=1., lengthscale=lengthscale)
+            kernel = GPy.kern.Exponential(input_dim=2, variance=init_variance, lengthscale=init_lengthscale)
         else:
-            kernel = GPy.kern.RBF(input_dim=2, variance=1., lengthscale=lengthscale)
+            kernel = GPy.kern.RBF(input_dim=2, variance=init_variance, lengthscale=init_lengthscale)
 
         # Include a mean function
         mf = None
         use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
         init_rho = self.get_parameter('initial_rho').get_parameter_value().double_value
         max_prior = self.get_parameter('low_fi_max_prior').get_parameter_value().double_value
-        
+        fix_rho = self.get_parameter('fix_rho').get_parameter_value().bool_value
+        if not fix_rho and self._warm_rho is not None:
+            init_rho = self._warm_rho
+
         if use_mf and self.gp_lo is not None:
             # Multi-fidelity mode: use low-fi model as mean with trainable rho
             mf = LowFiMapping(self.gp_lo, initial_rho=init_rho, max_prior=max_prior)
@@ -265,9 +285,11 @@ class GPPredictor(Node):
         noise_min = self.get_parameter('gp_noise_variance_min').get_parameter_value().double_value
         if noise_min > 0.0:
             gp_model.likelihood.variance.constrain_bounded(noise_min, 1e4)
+        if self._warm_noise_variance is not None:
+            gp_model.likelihood.variance = max(self._warm_noise_variance, noise_min)
 
         # Apply Fixed Lengthscale if requested
-        if self.get_parameter('fix_lengthscale').get_parameter_value().bool_value:
+        if fix_lengthscale:
             gp_model.kern.lengthscale.fix()
             self.get_logger().info(f"Fixed kernel lengthscale to {lengthscale}", throttle_duration_sec=60.0)
 
@@ -278,7 +300,7 @@ class GPPredictor(Node):
              gp_model.mean_function.rho.fix()
              # self.get_logger().info("Auto-fixed rho due to low signal-to-noise", throttle_duration_sec=60.0)
 
-        if self.get_parameter('fix_rho').get_parameter_value().bool_value:
+        if fix_rho:
             if use_mf and hasattr(gp_model.mean_function, 'rho'):
                 gp_model.mean_function.rho.fix()
                 self.get_logger().info(f"Fixed Multi-Fi scaling (rho) to {init_rho}", throttle_duration_sec=60.0)
@@ -389,6 +411,14 @@ class GPPredictor(Node):
             # 1. Optimize hyperparameters BEFORE prediction
             try:
                 gp_model.optimize(messages=False, max_iters=50)
+                # Cache the fit so the next call (and find_peaks_callback, which
+                # never optimizes on its own) warm-starts from here instead of
+                # cold defaults.
+                self._warm_lengthscale = float(gp_model.kern.lengthscale[0])
+                self._warm_variance = float(gp_model.kern.variance[0])
+                self._warm_noise_variance = float(gp_model.likelihood.variance[0])
+                if isinstance(gp_model.mean_function, LowFiMapping):
+                    self._warm_rho = float(gp_model.mean_function.rho[0])
             except Exception as opt_e:
                 self.get_logger().warn(f"Optimization failed: {opt_e}")
 

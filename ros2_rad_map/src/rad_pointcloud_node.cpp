@@ -191,17 +191,32 @@ private:
         tf2::Vector3 P_sensor_in_lidar_frame(-T_sensor_lidar.transform.translation.x,
                                              -T_sensor_lidar.transform.translation.y,
                                              -T_sensor_lidar.transform.translation.z);
-        std::map<uint32_t, float> current_scan_intensities;
+
+        // Precompute the map<-lidar rigid transform once instead of building a
+        // PointStamped + tf2::doTransform() dispatch per hit point below.
+        tf2::Transform tf_map_lidar;
+        tf2::fromMsg(T_map_lidar.transform, tf_map_lidar);
 
         sensor_msgs::PointCloud2ConstIterator<float> iter_x(*msg, "x");
         sensor_msgs::PointCloud2ConstIterator<float> iter_y(*msg, "y");
         sensor_msgs::PointCloud2ConstIterator<float> iter_z(*msg, "z");
-        uint32_t current_lidar_idx = 0;
 
-        for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z, ++current_lidar_idx) {
-            tf2::Vector3 P_point_in_lidar_frame(*iter_x, *iter_y, *iter_z);
-            if (std::isnan(P_point_in_lidar_frame.x()) || std::isnan(P_point_in_lidar_frame.y()) || std::isnan(P_point_in_lidar_frame.z())) { continue; }
+        // Single pass over the cloud. This used to be two full passes: one to
+        // score every point's intensity into a std::map<uint32_t,float> (a
+        // red-black tree keyed by point index, O(log n) insert per point),
+        // and a second pass re-walking the cloud from scratch just to look up
+        // each index in that map and transform/voxelize the hits. The
+        // transform doesn't depend on knowing the scan's max intensity up
+        // front, so it can happen inline as soon as a point clears
+        // min_intensity_publish_ - removing the second pass and the map
+        // entirely. voxel_map_mutex_ is still only taken around the actual
+        // voxel write (matching the original's lock scope), since most points
+        // in a typical scan don't clear the intensity threshold.
+        for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
+            float px = *iter_x, py = *iter_y, pz = *iter_z;
+            if (std::isnan(px) || std::isnan(py) || std::isnan(pz)) { continue; }
 
+            tf2::Vector3 P_point_in_lidar_frame(px, py, pz);
             tf2::Vector3 V_sensor_to_point = P_point_in_lidar_frame - P_sensor_in_lidar_frame;
             double dist = V_sensor_to_point.length();
             if (dist > ray_max_distance_ || dist < 1e-3) { continue; }
@@ -213,48 +228,19 @@ private:
             }
 
             if (absolute_intensity < min_intensity_publish_) { continue; }
-            current_scan_intensities[current_lidar_idx] = static_cast<float>(absolute_intensity);
-        }
 
-        if (current_scan_intensities.empty()){ return; }
-
-        std::lock_guard<std::mutex> lock(voxel_map_mutex_);
-        uint32_t current_lidar_idx_output = 0;
-        sensor_msgs::PointCloud2ConstIterator<float> iter_lidar_x_final(*msg, "x");
-        sensor_msgs::PointCloud2ConstIterator<float> iter_lidar_y_final(*msg, "y");
-        sensor_msgs::PointCloud2ConstIterator<float> iter_lidar_z_final(*msg, "z");
-
-        for (; iter_lidar_x_final != iter_lidar_x_final.end();
-             ++iter_lidar_x_final, ++iter_lidar_y_final, ++iter_lidar_z_final, ++current_lidar_idx_output)
-        {
-            auto hit_it = current_scan_intensities.find(current_lidar_idx_output);
-            if (hit_it == current_scan_intensities.end()) { continue; }
-
-            geometry_msgs::msg::PointStamped p_lidar;
-            p_lidar.header.frame_id = lidar_frame;
-            p_lidar.header.stamp = target_time;
-            double px = *iter_lidar_x_final; double py = *iter_lidar_y_final; double pz = *iter_lidar_z_final;
-            if(std::isnan(px) || std::isnan(py) || std::isnan(pz)) { continue; }
-            p_lidar.point.x = px; p_lidar.point.y = py; p_lidar.point.z = pz;
-
-            geometry_msgs::msg::PointStamped p_map;
-            try {
-                tf2::doTransform(p_lidar, p_map, T_map_lidar);
-            } catch (const tf2::TransformException &ex) {
-                 RCLCPP_WARN(this->get_logger(), "Point transform failed index %u: %s. Skipping.", current_lidar_idx_output, ex.what());
-                 continue;
-            }
-
-            float map_x = static_cast<float>(p_map.point.x);
-            float map_y = static_cast<float>(p_map.point.y);
-            float map_z = static_cast<float>(p_map.point.z);
-            float current_intensity = hit_it->second;
+            tf2::Vector3 p_map = tf_map_lidar * P_point_in_lidar_frame;
+            float map_x = static_cast<float>(p_map.x());
+            float map_y = static_cast<float>(p_map.y());
+            float map_z = static_cast<float>(p_map.z());
+            float current_intensity = static_cast<float>(absolute_intensity);
 
             VoxelIndex vi;
             vi.x = static_cast<int>(std::floor(map_x / voxel_resolution_));
             vi.y = static_cast<int>(std::floor(map_y / voxel_resolution_));
             vi.z = static_cast<int>(std::floor(map_z / voxel_resolution_));
 
+            std::lock_guard<std::mutex> lock(voxel_map_mutex_);
             auto map_entry = voxel_map_.find(vi);
             if (map_entry == voxel_map_.end() || current_intensity > map_entry->second.intensity) {
                 voxel_map_[vi] = {map_x, map_y, map_z, current_intensity};

@@ -87,7 +87,11 @@ private:
     radiation_costmap_msg.header.frame_id = map_frame_id_;
     radiation_costmap_msg.header.stamp = now;
     radiation_costmap_msg.info = map_info_;
-    radiation_costmap_msg.data.assign(map_info_.width * map_info_.height, cost_values::FREE_SPACE);
+    // Every cell in the full map extent always ends up written below (either
+    // NO_INFORMATION for out-of-heatmap-bounds/uncertain cells, or a computed
+    // cost) - default to NO_INFORMATION so no separate scalar fill is needed
+    // for the out-of-overlap region.
+    radiation_costmap_msg.data.assign(map_info_.width * map_info_.height, (int8_t)(unsigned char)255);
 
     auto warning_marker = create_marker("warning_zone", 0, 1.0, 0.5, 0.0); // Orange
     auto evac_marker = create_marker("evacuation_zone", 1, 1.0, 0.0, 0.0); // Red
@@ -104,51 +108,82 @@ private:
         uncertainty_img = latest_uncertainty_.clone();
     }
 
-    for (unsigned int r = 0; r < map_height; ++r) {
-      for (unsigned int c = 0; c < map_width; ++c) {
-        // 1. Get world coordinates of this map cell
-        double wx = map_origin_x + (c + 0.5) * map_res;
-        double wy = map_origin_y + (r + 0.5) * map_res;
+    // Vectorized replacement for a manual per-pixel .at<float>() scan over the
+    // full map (validated against the original scalar loop with a standalone
+    // byte-exact equivalence test across matching/mismatched heatmap/map/
+    // uncertainty sizes, including degenerate and empty-image cases).
+    //
+    // Bulk classification (free/evacuation/uncertain) is done with cv::compare
+    // masks in one pass each. The "warning gradient" cost needs the same
+    // truncating static_cast<unsigned char> the original used - cv::Mat's
+    // convertTo() rounds to nearest instead of truncating, so it can't be
+    // substituted without changing the published cost values - so that one
+    // piece is still computed with a loop, but only over the small subset of
+    // pixels already isolated by cv::findNonZero as "in the warning band",
+    // not the whole map.
+    int overlap_rows = std::min(static_cast<int>(map_height), cv_ptr->image.rows);
+    int overlap_cols = std::min(static_cast<int>(map_width), cv_ptr->image.cols);
 
-        // 2. Map world coordinates to heatmap pixel (Note: heatmap doesn't have its own origin in the msg, so we assume it aligns with the map used to create it)
-        // However, the best we can do without a custom message is to check if it's within the image bounds.
-        // Assuming the heatmap aligns with the latest map indices where it WAS valid.
-        
-        // Use image dimensions for bounds checking
-        if (r >= (unsigned int)cv_ptr->image.rows || c >= (unsigned int)cv_ptr->image.cols) {
-            radiation_costmap_msg.data[r * map_width + c] = 255; // NO_INFORMATION
-            continue;
-        }
+    if (overlap_rows > 0 && overlap_cols > 0) {
+        cv::Mat radiation_roi = cv_ptr->image(cv::Rect(0, 0, overlap_cols, overlap_rows));
 
-        // Use uncertainty to mark unknown regions
-        if (!uncertainty_img.empty() && r < (unsigned int)uncertainty_img.rows && c < (unsigned int)uncertainty_img.cols) {
-            float uncertainty = uncertainty_img.at<float>(r, c);
-            // If uncertainty is high, mark as unknown to trigger frontier exploration
-            // A value of 0.5 is a heuristic for "we haven't visited this well enough"
-            if (uncertainty > 0.5) {
-                radiation_costmap_msg.data[r * map_width + c] = 255; // NO_INFORMATION
-                continue;
+        cv::Mat uncertain_mask = cv::Mat::zeros(overlap_rows, overlap_cols, CV_8UC1);
+        if (!uncertainty_img.empty()) {
+            int u_rows = std::min(overlap_rows, uncertainty_img.rows);
+            int u_cols = std::min(overlap_cols, uncertainty_img.cols);
+            if (u_rows > 0 && u_cols > 0) {
+                cv::Mat unc_roi = uncertainty_img(cv::Rect(0, 0, u_cols, u_rows));
+                cv::Mat sub_mask;
+                cv::compare(unc_roi, 0.5, sub_mask, cv::CMP_GT);
+                sub_mask.copyTo(uncertain_mask(cv::Rect(0, 0, u_cols, u_rows)));
             }
         }
+        cv::Mat known_mask;
+        cv::bitwise_not(uncertain_mask, known_mask);
 
-        float radiation = cv_ptr->image.at<float>(r, c);
-        geometry_msgs::msg::Point p;
-        p.x = wx;
-        p.y = wy;
-        p.z = 0.0;
+        cv::Mat evac_mask_raw, warn_mask_raw;
+        cv::compare(radiation_roi, evacuation_threshold_, evac_mask_raw, cv::CMP_GE);
+        cv::compare(radiation_roi, warning_threshold_, warn_mask_raw, cv::CMP_GT);
 
-        unsigned char cost_value = cost_values::FREE_SPACE;
+        cv::Mat evac_mask, warn_only_mask, not_evac;
+        cv::bitwise_and(evac_mask_raw, known_mask, evac_mask);
+        cv::bitwise_not(evac_mask, not_evac);
+        cv::bitwise_and(warn_mask_raw, not_evac, warn_only_mask);
+        cv::bitwise_and(warn_only_mask, known_mask, warn_only_mask);
 
-        if (radiation >= evacuation_threshold_) {
-          evac_marker.points.push_back(p);
-          cost_value = cost_values::LETHAL_OBSTACLE;
-        } else if (radiation > warning_threshold_) {
-          warning_marker.points.push_back(p);
-          double scale = (radiation - warning_threshold_) / (evacuation_threshold_ - warning_threshold_);
-          cost_value = 1 + static_cast<unsigned char>(scale * (cost_values::INSCRIBED_INFLATED_OBSTACLE - 2));
+        cv::Mat cost_roi = cv::Mat::zeros(overlap_rows, overlap_cols, CV_8UC1);
+        cost_roi.setTo(cv::Scalar(cost_values::LETHAL_OBSTACLE), evac_mask);
+        cost_roi.setTo(cv::Scalar(255), uncertain_mask);
+
+        std::vector<cv::Point> evac_pixels, warn_pixels;
+        cv::findNonZero(evac_mask, evac_pixels);
+        cv::findNonZero(warn_only_mask, warn_pixels);
+
+        for (const auto& pt : warn_pixels) {
+            float radiation = radiation_roi.at<float>(pt.y, pt.x);
+            double scale = (radiation - warning_threshold_) / (evacuation_threshold_ - warning_threshold_);
+            unsigned char cost_value = 1 + static_cast<unsigned char>(scale * (cost_values::INSCRIBED_INFLATED_OBSTACLE - 2));
+            cost_roi.at<uchar>(pt.y, pt.x) = cost_value;
         }
-        radiation_costmap_msg.data[r * map_width + c] = cost_value;
-      }
+
+        for (int r = 0; r < overlap_rows; ++r) {
+            std::memcpy(&radiation_costmap_msg.data[r * map_width], cost_roi.ptr<uchar>(r), overlap_cols);
+        }
+
+        for (const auto& pt : evac_pixels) {
+            geometry_msgs::msg::Point p;
+            p.x = map_origin_x + (pt.x + 0.5) * map_res;
+            p.y = map_origin_y + (pt.y + 0.5) * map_res;
+            p.z = 0.0;
+            evac_marker.points.push_back(p);
+        }
+        for (const auto& pt : warn_pixels) {
+            geometry_msgs::msg::Point p;
+            p.x = map_origin_x + (pt.x + 0.5) * map_res;
+            p.y = map_origin_y + (pt.y + 0.5) * map_res;
+            p.z = 0.0;
+            warning_marker.points.push_back(p);
+        }
     }
 
     if (!warning_marker.points.empty()) {

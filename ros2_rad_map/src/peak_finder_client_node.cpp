@@ -8,10 +8,16 @@
 #include "ros2_rad_map/msg/rad_zone_array.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include <vector>
+#include <deque>
 #include <mutex>
 #include <iomanip>
 #include <cmath>
 #include "std_msgs/msg/float64.hpp"
+
+// Historical sample buffer cap: previously unbounded, growing (and getting
+// copied wholesale + re-marshalled into a service request) for the entire
+// mission. Mirrors gp_predictor_node.py's equivalent 1000-sample cap.
+static constexpr size_t kMaxHistoricalSamples = 1000;
 
 std_msgs::msg::ColorRGBA valueToColor(double value, double min_val, double max_val) {
     std_msgs::msg::ColorRGBA color;
@@ -106,10 +112,18 @@ private:
         try {
             pose_in_sensor.header.frame_id = sensor_frame_;
             pose_in_sensor.header.stamp = rclcpp::Time(0);
-            tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_, std::chrono::milliseconds(500));
+            // No timeout (defaults to 0): this ran at /rad's publish rate and
+            // a 500ms blocking wait here stalled every other callback on this
+            // node's (default single-threaded) executor. TF is virtually
+            // always already available by the time a sample arrives; if not,
+            // skip this one sample rather than block.
+            tf_buffer_.transform(pose_in_sensor, pose_in_map, map_frame_);
 
             std::lock_guard<std::mutex> lock(data_mutex_);
             historical_samples_.push_back({pose_in_map.pose.position.x, pose_in_map.pose.position.y, msg->data[1]});
+            if (historical_samples_.size() > kMaxHistoricalSamples) {
+                historical_samples_.pop_front();
+            }
         } catch (const tf2::TransformException &ex) {
             RCLCPP_WARN(this->get_logger(), "TF Error for logging sample: %s", ex.what());
         }
@@ -121,7 +135,7 @@ private:
             return;
         }
 
-        std::vector<RadSample> samples_copy;
+        std::deque<RadSample> samples_copy;
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             if (historical_samples_.empty()) {
@@ -361,7 +375,7 @@ private:
     }
 
     std::mutex data_mutex_;
-    std::vector<RadSample> historical_samples_;
+    std::deque<RadSample> historical_samples_;
     std::vector<ros2_rad_map::msg::RadZone> persistent_zones_;
     // Parallel to persistent_zones_: how many service calls have found a peak here.
     std::vector<int> zone_detection_counts_;

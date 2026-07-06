@@ -2,11 +2,10 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
-    ExecuteProcess, IncludeLaunchDescription, TimerAction,
-    SetEnvironmentVariable, LogInfo,
+    IncludeLaunchDescription, TimerAction,
+    LogInfo,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import EnvironmentVariable
 from launch_ros.actions import Node
 
 _T_SIM   =  5
@@ -21,35 +20,14 @@ def generate_launch_description():
     spot_robot_share = get_package_share_directory("spot_robot")
     wfd_share = get_package_share_directory("explore_lite")
 
-    cuda_env = [
-        SetEnvironmentVariable("CUDA_VISIBLE_DEVICES", "0"),
-        SetEnvironmentVariable("CUDA_HOME", "/usr/local/cuda"),
-        SetEnvironmentVariable(
-            "LD_LIBRARY_PATH",
-            ["/usr/local/cuda/lib64:", EnvironmentVariable("LD_LIBRARY_PATH")],
-        ),
-    ]
-
-    # Probe the GPU at launch time and print device info once.
-    cuda_probe = ExecuteProcess(
-        cmd=[
-            "python3", "-c",
-            (
-                "import cupy as cp; "
-                "d = cp.cuda.Device(0); "
-                "props = cp.cuda.runtime.getDeviceProperties(0); "
-                "name = props['name'].decode(); "
-                "mem = props['totalGlobalMem'] // (1024**2); "
-                "print(f'[CUDA] Device 0: {name} | {mem} MB | CUDA_VISIBLE_DEVICES=0')"
-            ),
-        ],
-        output="screen",
-    )
+    # NOTE: gp_predictor_node (GPy) and rad_heatmap_node (OpenCV CPU Mat) do not
+    # use CUDA/CuPy/cv::cuda — both run entirely on CPU. There is no GPU codepath
+    # in this bringup today, so no CUDA env/probe is set up here.
 
     simulation_launch = TimerAction(
         period=float(_T_SIM),
         actions=[
-            LogInfo(msg="[CUDA] rad_field_server, rad_sensor_simulator, source_selector_node launching (env: CUDA_VISIBLE_DEVICES=0)"),
+            LogInfo(msg="rad_field_server, rad_sensor_simulator, source_selector_node launching"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(rad_launch_share, "launch", "simulation_launch.py")
@@ -61,7 +39,7 @@ def generate_launch_description():
     nav_launch = TimerAction(
         period=float(_T_NAV2),
         actions=[
-            LogInfo(msg="[CUDA] nav2 stack launching (env: CUDA_VISIBLE_DEVICES=0)"),
+            LogInfo(msg="nav2 stack launching"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(spot_robot_share, "launch", "nav2.launch.py")
@@ -73,7 +51,7 @@ def generate_launch_description():
     gp_stack = TimerAction(
         period=float(_T_RAD),
         actions=[
-            LogInfo(msg="[CUDA] gp_predictor_node launching — CuPy GP acceleration enabled"),
+            LogInfo(msg="gp_predictor_node launching (CPU GPy, warm-started hyperparameters)"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(rad_launch_share, "launch", "gp_predictor_launch.py")
@@ -85,7 +63,7 @@ def generate_launch_description():
     heatmap_stack = TimerAction(
         period=float(_T_HEAT),
         actions=[
-            LogInfo(msg="[CUDA] rad_heatmap_node launching — cv::cuda::GpuMat kernel enabled"),
+            LogInfo(msg="rad_heatmap_node launching (CPU OpenCV)"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(rad_launch_share, "launch", "rad_heatmap_launch.py")
@@ -97,7 +75,7 @@ def generate_launch_description():
     explore_launch = TimerAction(
         period=float(_T_EXPL),
         actions=[
-            LogInfo(msg="[CUDA] explore_lite + rad_local_recovery launching (env: CUDA_VISIBLE_DEVICES=0)"),
+            LogInfo(msg="explore_lite + rad_local_recovery launching"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(wfd_share, "launch", "explore.launch.py")
@@ -121,12 +99,11 @@ def generate_launch_description():
         )]
     )
 
-    return LaunchDescription(cuda_env + [
-        cuda_probe,
-        simulation_launch,
-        nav_launch,
+    return LaunchDescription([
+        #simulation_launch,
+        #nav_launch,
         gp_stack,
         heatmap_stack,
-        explore_launch,
-        system_reset,
+        #explore_launch,
+        #system_reset,
     ])
