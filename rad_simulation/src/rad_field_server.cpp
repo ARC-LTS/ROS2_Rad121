@@ -57,6 +57,11 @@ public:
         this->declare_parameter<bool>("background_radiation_enabled", false);
         this->declare_parameter<double>("background_radiation_min", 0.05);
         this->declare_parameter<double>("background_radiation_max", 1.0);
+        // Random placement previously only checked the cell was free space, with
+        // no minimum clearance from the robot -- a source (including a
+        // high-intensity one) could land at or right next to the robot's own
+        // spawn point, delivering a large dose before exploration even begins.
+        this->declare_parameter<double>("min_source_distance_from_robot_m", 2.0);
         this->declare_parameter<std::string>("output_yaml_file",
             ament_index_cpp::get_package_share_directory("rad_simulation") + "/params/saved_sources.yaml");
 
@@ -229,24 +234,46 @@ private:
 
         std::uniform_int_distribution<unsigned int> x_dist(0, map_width - 1);
         std::uniform_int_distribution<unsigned int> y_dist(0, map_height - 1);
-        
+
         double low_min = this->get_parameter("low_intensity_min").as_double();
         double low_max = this->get_parameter("low_intensity_max").as_double();
         double high_threshold = this->get_parameter("high_intensity_threshold").as_double();
-        
+
         std::uniform_real_distribution<double> low_intensity_dist(low_min, low_max);
         std::uniform_real_distribution<double> high_intensity_dist(high_threshold, high_threshold * 2.0);
+
+        double min_dist_from_robot = this->get_parameter("min_source_distance_from_robot_m").as_double();
+        double min_dist_sq = min_dist_from_robot * min_dist_from_robot;
+        bool have_robot_pose = false;
+        double robot_x = 0.0, robot_y = 0.0;
+        try {
+            geometry_msgs::msg::TransformStamped t =
+                tf_buffer_.lookupTransform(map_frame_, robot_frame_, tf2::TimePointZero);
+            robot_x = t.transform.translation.x;
+            robot_y = t.transform.translation.y;
+            have_robot_pose = true;
+        } catch (const tf2::TransformException &ex) {
+            RCLCPP_WARN(this->get_logger(),
+                "Could not look up robot pose for source-placement clearance check (%s); "
+                "spawning without the minimum-distance-from-robot constraint.", ex.what());
+        }
 
         for (int i = 0; i < num_unknown; ++i) {
             unsigned int rand_mx, rand_my;
             int attempts = 0;
             const int max_attempts = 100;
+            double world_x = 0.0, world_y = 0.0;
 
             do {
                 rand_mx = x_dist(rng_);
                 rand_my = y_dist(rng_);
                 attempts++;
-            } while (current_map_.data[rand_my * map_width + rand_mx] != 0 && attempts < max_attempts);
+                world_x = map_origin_x + (rand_mx + 0.5) * map_res;
+                world_y = map_origin_y + (rand_my + 0.5) * map_res;
+            } while (attempts < max_attempts &&
+                     (current_map_.data[rand_my * map_width + rand_mx] != 0 ||
+                      (have_robot_pose &&
+                       (std::pow(world_x - robot_x, 2) + std::pow(world_y - robot_y, 2)) < min_dist_sq)));
 
             if (attempts == max_attempts) continue;
 
