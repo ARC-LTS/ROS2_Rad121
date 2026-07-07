@@ -114,7 +114,39 @@ private:
     {
         if (exploration_finished_) return;
 
-        if (current_rad_val_ > acute_dose_rate_) {
+        // Self-heal: if we're marked as recovering but the robot's current
+        // dose has already dropped to a genuinely safe level, resume
+        // immediately rather than waiting on a specific navigate_to_pose goal
+        // to resolve. Without this, once dose drops below acute_dose_rate_
+        // (so the check below stops re-firing triggerRecovery()) while
+        // is_recovering_ is still true -- e.g. the in-flight goal resolves
+        // via a path that doesn't hit the SUCCEEDED branch, or simply hasn't
+        // resolved yet -- the state machine has no way to progress at all:
+        // it's not above acute (so won't retry/escalate to the 4-failure
+        // origin fallback) and never got the SUCCEEDED callback (so
+        // is_recovering_ never clears). Exploration stays stopped forever.
+        // Observed directly: dose sat at 2.5-4 mrem/hr (above safe, below
+        // acute) with no active navigate_to_pose goal and no further log
+        // activity for 5+ minutes, requiring manual /explore_node/start.
+        if (is_recovering_ && current_rad_val_ < safe_dose_threshold_) {
+            RCLCPP_INFO(this->get_logger(),
+                "Dose (%.2f) now below safe threshold (%.2f). Resuming exploration.",
+                current_rad_val_, safe_dose_threshold_);
+            nav_action_client_->async_cancel_all_goals();
+            is_recovering_ = false;
+            consecutive_recovery_failures_ = 0;
+            failed_escape_points_.clear();
+            callTriggerService(start_explore_client_, "Start Exploration");
+            return;
+        }
+
+        // Keep actively retrying for as long as we're either above the acute
+        // threshold (a fresh emergency) OR already mid-recovery and not yet
+        // confirmed safe -- otherwise there's a dead zone between
+        // safe_dose_threshold_ and acute_dose_rate_ (exactly the 2.5-4
+        // mrem/hr observed above) where recovery would neither resolve nor
+        // keep progressing.
+        if (current_rad_val_ > acute_dose_rate_ || is_recovering_) {
             triggerRecovery();
         }
     }
