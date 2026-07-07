@@ -301,10 +301,14 @@ class GPPredictor(Node):
              # self.get_logger().info("Auto-fixed rho due to low signal-to-noise", throttle_duration_sec=60.0)
 
         if fix_rho:
-            if use_mf and hasattr(gp_model.mean_function, 'rho'):
+            # Checked by attribute (mean function type), not use_mf: if multi-fidelity
+            # was requested but the low-fi model failed to load, gp_model.mean_function
+            # is still a Constant fallback and must be fixed too, or its 'C' offset
+            # floats free and gets refit to the training data on every call.
+            if hasattr(gp_model.mean_function, 'rho'):
                 gp_model.mean_function.rho.fix()
                 self.get_logger().info(f"Fixed Multi-Fi scaling (rho) to {init_rho}", throttle_duration_sec=60.0)
-            elif not use_mf and hasattr(gp_model.mean_function, 'C'):
+            elif hasattr(gp_model.mean_function, 'C'):
                 gp_model.mean_function.C.fix()
                 self.get_logger().info(f"Fixed Single-GP background mean to {mean_value}", throttle_duration_sec=60.0)
 
