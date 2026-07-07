@@ -21,11 +21,21 @@ def generate_launch_description():
     )
     orbit_surveys = LaunchConfiguration('orbit_surveys')
 
+    headless_arg = DeclareLaunchArgument(
+        'headless',
+        default_value='false',
+        description='Run Gazebo server-only (no GUI process), for batch/automated trials '
+                    'where no display is available.',
+    )
+
     # --- 1. Core Gazebo Simulation (Husky robot) ---
     gz_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(gz_share, 'launch', 'simulation.launch.py')
-        )
+        ),
+        launch_arguments=[
+            ('headless', LaunchConfiguration('headless')),
+        ]
     )
 
     # --- 2. Radiation & Battery Simulation (5s delay) ---
@@ -146,6 +156,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         orbit_surveys_arg,
+        headless_arg,
         gz_launch,
         simulation_launch,
         slam_launch,
