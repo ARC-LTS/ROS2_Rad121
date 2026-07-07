@@ -331,6 +331,17 @@ class GPPredictor(Node):
             target_model = gp_model
             min_x, min_y = training_points.min(axis=0)
             max_x, max_y = training_points.max(axis=0)
+            # scipy's L-BFGS-B raises inside old_bound_to_new() on a degenerate
+            # (min == max) bound, which happens whenever training points haven't
+            # spread out on an axis yet (e.g. early in a mission, near the spawn
+            # point). Pad so the search region is never zero-width.
+            pad = 0.5
+            if max_x - min_x < 1e-6:
+                min_x -= pad
+                max_x += pad
+            if max_y - min_y < 1e-6:
+                min_y -= pad
+                max_y += pad
             search_bounds = [(min_x, max_x), (min_y, max_y)]
         else:
             use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value

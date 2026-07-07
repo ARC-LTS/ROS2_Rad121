@@ -88,6 +88,11 @@ def generate_launch_description():
                     os.path.join(rad_launch_share, 'launch', 'rad_costmap_visualizer_launch.py')
                 )
             ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(rad_launch_share, 'launch', 'peak_finder_launch.py')
+                )
+            ),
         ]
     )
 
