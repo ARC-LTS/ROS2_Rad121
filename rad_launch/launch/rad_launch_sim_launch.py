@@ -28,6 +28,13 @@ def generate_launch_description():
                     'where no display is available.',
     )
 
+    world_arg = DeclareLaunchArgument(
+        'world',
+        default_value='warehouse_barricaded',
+        description='Gazebo world to load (e.g. rectangle, warehouse_barricaded). '
+                    'Passed through to clearpath_gz.',
+    )
+
     # --- 1. Core Gazebo Simulation (Husky robot) ---
     gz_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -35,6 +42,7 @@ def generate_launch_description():
         ),
         launch_arguments=[
             ('headless', LaunchConfiguration('headless')),
+            ('world', LaunchConfiguration('world')),
         ]
     )
 
@@ -162,6 +170,7 @@ def generate_launch_description():
     return LaunchDescription([
         orbit_surveys_arg,
         headless_arg,
+        world_arg,
         gz_launch,
         simulation_launch,
         slam_launch,
