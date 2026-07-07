@@ -24,11 +24,13 @@
 #include <filesystem>
 #include <queue>
 #include <fstream>
+#include <limits>
 
 struct RadiationSample
 {
     double x, y, value;
     int id;
+    bool is_background;
 };
 
 cv::Mat createBaseMapImage(const nav_msgs::msg::OccupancyGrid &map);
@@ -152,6 +154,16 @@ private:
     cv::Mat raw_mean_data_, raw_std_data_;
     cv::Mat persistent_visibility_mask_;
 
+    // Historical (monotonic) color-scale bounds: the legend/colormap range must
+    // only ever expand as new extremes are observed, never shrink back down to
+    // whatever the current frame happens to contain — otherwise the scale (and
+    // therefore the displayed colors) jitters frame-to-frame instead of giving a
+    // stable view of where readings actually sit relative to the whole run.
+    double hist_min_mean_ = std::numeric_limits<double>::infinity();
+    double hist_max_mean_ = -std::numeric_limits<double>::infinity();
+    double hist_min_std_  = std::numeric_limits<double>::infinity();
+    double hist_max_std_  = -std::numeric_limits<double>::infinity();
+
     // Diagnostic state
     struct GPDiagnostics {
         double log_likelihood;
@@ -232,6 +244,11 @@ private:
             bg_std_         = 1.0;
             pending_elevated_.clear();
             next_sample_id_ = 0;
+
+            hist_min_mean_ = std::numeric_limits<double>::infinity();
+            hist_max_mean_ = -std::numeric_limits<double>::infinity();
+            hist_min_std_  = std::numeric_limits<double>::infinity();
+            hist_max_std_  = -std::numeric_limits<double>::infinity();
 
             if (!persistent_visibility_mask_.empty()) {
                 persistent_visibility_mask_ = cv::Mat::zeros(
@@ -437,7 +454,7 @@ private:
         double mx = 0, my = 0, mv = 0;
         for (const auto &p : pending_elevated_) { mx += p.x; my += p.y; mv += p.value; }
         double n = static_cast<double>(pending_elevated_.size());
-        RadiationSample s = {mx / n, my / n, mv / n, next_sample_id_++};
+        RadiationSample s = {mx / n, my / n, mv / n, next_sample_id_++, false};
         historical_samples_.push_back(s);
         RCLCPP_INFO(this->get_logger(),
             "Committed elevated sample #%d at (%.2f, %.2f): %.3f mrem/hr (avg of %zu readings)",
@@ -504,18 +521,25 @@ private:
             }
             if (!far_enough) return;
 
-            RadiationSample s = {x, y, reading, next_sample_id_++};
+            RadiationSample s = {x, y, reading, next_sample_id_++, true};
             historical_samples_.push_back(s);
 
             // When the buffer is full evict only background-level samples — never
             // elevated ones — so committed source readings stay locked in.
+            // Restricting the search to is_background entries (via +inf for
+            // elevated ones) guarantees this never selects an elevated sample,
+            // even after every background anchor has already been evicted.
             if (historical_samples_.size() > 1000) {
                 auto evict = std::min_element(
                     historical_samples_.begin(), historical_samples_.end(),
                     [](const RadiationSample &a, const RadiationSample &b) {
-                        return a.value < b.value;
+                        double av = a.is_background ? a.value : std::numeric_limits<double>::infinity();
+                        double bv = b.is_background ? b.value : std::numeric_limits<double>::infinity();
+                        return av < bv;
                     });
-                historical_samples_.erase(evict);
+                if (evict != historical_samples_.end() && evict->is_background) {
+                    historical_samples_.erase(evict);
+                }
             }
             return;
         }
@@ -1008,19 +1032,31 @@ private:
             }
         }
 
-        // Calculate current ranges for live legend
-        double min_val, max_val;
-        cv::minMaxLoc(hist_mean, &min_val, &max_val);
-        if (max_val < 0.1) max_val = 0.1;
+        // Expand the historical (monotonic) color-scale bounds with whatever this
+        // frame contains. These only ever grow — they never shrink back down just
+        // because the current frame's range happens to be narrower — so the legend
+        // and colormap stay stable across the run instead of jittering every cycle.
+        if (!hist_mean.empty()) {
+            double cur_min, cur_max;
+            cv::minMaxLoc(hist_mean, &cur_min, &cur_max);
+            hist_min_mean_ = std::min(hist_min_mean_, cur_min);
+            hist_max_mean_ = std::max(hist_max_mean_, cur_max);
+        }
+        if (!hist_std.empty()) {
+            double cur_min, cur_max;
+            cv::minMaxLoc(hist_std, &cur_min, &cur_max);
+            hist_min_std_ = std::min(hist_min_std_, cur_min);
+            hist_max_std_ = std::max(hist_max_std_, cur_max);
+        }
 
         // 1. Overlay topic: No legend, 1:1 scaling with map
-        auto mean_overlay = createBlendedMap(base_bgr, flipped_hist_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask, false);
+        auto mean_overlay = createBlendedMap(base_bgr, flipped_hist_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask, false, hist_min_mean_, hist_max_mean_);
         if (!mean_overlay.empty()) {
             historical_mean_overlay_pub_.publish(*cv_bridge::CvImage(h, "bgr8", mean_overlay).toImageMsg());
         }
 
         // 2. Display topic: Includes adaptive legend
-        auto mean_display = createBlendedMap(base_bgr, flipped_hist_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask, true);
+        auto mean_display = createBlendedMap(base_bgr, flipped_hist_mean, "mrem/hr", background_threshold_mrem_hr_, free_space_mask, true, hist_min_mean_, hist_max_mean_);
         if (!mean_display.empty())
         {
             std::lock_guard<std::mutex> lock(zone_mutex_);
@@ -1028,12 +1064,12 @@ private:
                 cv::drawContours(mean_display, zone_contours_, -1, cv::Scalar(0, 165, 255), 2);
             }
             historical_heatmap_pub_.publish(*cv_bridge::CvImage(h, "bgr8", mean_display).toImageMsg());
-            
+
             std::lock_guard<std::mutex> d_lock(data_mutex_);
             latest_historical_mean_image_ = mean_display.clone();
         }
 
-        auto blended_hist_std = createBlendedMap(base_bgr, flipped_hist_std, "Std. Dev.", 0.0, free_space_mask, true);
+        auto blended_hist_std = createBlendedMap(base_bgr, flipped_hist_std, "Std. Dev.", 0.0, free_space_mask, true, hist_min_std_, hist_max_std_);
         if (!blended_hist_std.empty())
         {
             std::lock_guard<std::mutex> lock(zone_mutex_);
@@ -1041,19 +1077,16 @@ private:
                 cv::drawContours(blended_hist_std, zone_contours_, -1, cv::Scalar(0, 165, 255), 2);
             }
             historical_std_dev_pub_.publish(*cv_bridge::CvImage(h, "bgr8", blended_hist_std).toImageMsg());
-            
+
             std::lock_guard<std::mutex> d_lock(data_mutex_);
             latest_historical_std_dev_image_ = blended_hist_std.clone();
         }
     }
 
-    cv::Mat createBlendedMap(const cv::Mat &base_img, const cv::Mat &data, const std::string &unit, double threshold, const cv::Mat &mask, bool add_legend)
+    cv::Mat createBlendedMap(const cv::Mat &base_img, const cv::Mat &data, const std::string &unit, double threshold, const cv::Mat &mask, bool add_legend, double min_val, double max_val)
     {
         if (data.empty())
             return {};
-
-        double min_val, max_val;
-        cv::minMaxLoc(data, &min_val, &max_val);
 
         if (max_val < threshold)
             max_val = threshold + 0.1;

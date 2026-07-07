@@ -16,7 +16,10 @@ def generate_launch_description():
         executable='gp_predictor_node.py',
         name='gp_predictor_node',
         output='screen',
-        parameters=[{'model_path': model_file_path}, param_file]
+        # param_file first: heatmap.yaml's own 'model_path: ""' placeholder must be
+        # overridden by the resolved path below, and ROS2 applies later entries
+        # in this list on top of earlier ones for overlapping keys.
+        parameters=[param_file, {'model_path': model_file_path}]
     )
 
     return LaunchDescription([

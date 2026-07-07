@@ -2,7 +2,7 @@ rad_pointcloud_node:
   ros__parameters:
     use_sim_time: True 
     radiation_topic: "/rad"
-    lidar_topic: "/velodyne_points"             
+    lidar_topic: "/sensors/lidar3d_0/points"
     output_topic: "/rad_pointcloud_accumulated" 
     source_estimate_topic: "/rad_source_estimate"
     sensor_frame: "base_link"
