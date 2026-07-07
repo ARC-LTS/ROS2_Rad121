@@ -193,9 +193,20 @@ private:
         geometry_msgs::msg::Point escape_point;
         bool point_found = false;
 
-        // After 4 consecutive failures, override everything and go to origin —
-        // the robot is genuinely stuck and needs a guaranteed safe destination.
-        if (consecutive_recovery_failures_ >= 4) {
+        // After 4 consecutive failures, try the map origin as a guaranteed
+        // destination -- but only if it hasn't already failed itself.
+        // Without this check, once a goal to the origin fails once, this
+        // branch retries the exact same doomed point forever with no
+        // escalation (observed directly: stuck retrying (0,0) from a corner
+        // for 10+ consecutive attempts, each failing instantly). If origin
+        // is already a known dead end, fall through to the normal
+        // blacklist-respecting search instead.
+        bool origin_already_failed = false;
+        for (const auto& fe : failed_escape_points_) {
+            double dx = origin_x_ - fe.x, dy = origin_y_ - fe.y;
+            if (dx * dx + dy * dy < 4.0) { origin_already_failed = true; break; }
+        }
+        if (consecutive_recovery_failures_ >= 4 && !origin_already_failed) {
             RCLCPP_WARN(this->get_logger(),
                 "4+ recovery failures. Forcing navigation to map origin as last resort.");
             escape_point.x = origin_x_;
