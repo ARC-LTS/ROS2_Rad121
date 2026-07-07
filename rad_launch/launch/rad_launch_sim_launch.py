@@ -35,6 +35,17 @@ def generate_launch_description():
                     'Passed through to clearpath_gz.',
     )
 
+    radiation_agnostic_arg = DeclareLaunchArgument(
+        'radiation_agnostic',
+        default_value='false',
+        description='Realize the radiation-agnostic baseline arm: zero out '
+                    'explore_node\'s radiation-informed cost weights and make '
+                    'local_recovery_node\'s dose thresholds unreachable, both at '
+                    'construction time. Must be set here (not via a later '
+                    '`ros2 param set`) -- these nodes only read these parameters '
+                    'once, at startup.',
+    )
+
     # --- 1. Core Gazebo Simulation (Husky robot) ---
     gz_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -111,12 +122,18 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(wfd_share, 'launch', 'explore.launch.py')
-                )
+                ),
+                launch_arguments=[
+                    ('radiation_agnostic', LaunchConfiguration('radiation_agnostic')),
+                ]
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(rad_launch_share, 'launch', 'rad_local_recovery_launch.py')
-                )
+                ),
+                launch_arguments=[
+                    ('radiation_agnostic', LaunchConfiguration('radiation_agnostic')),
+                ]
             ),
             # Optional: orbital survey of discovered radiation zones.
             # Disabled by default; enable with orbit_surveys:=true.
@@ -171,6 +188,7 @@ def generate_launch_description():
         orbit_surveys_arg,
         headless_arg,
         world_arg,
+        radiation_agnostic_arg,
         gz_launch,
         simulation_launch,
         slam_launch,
