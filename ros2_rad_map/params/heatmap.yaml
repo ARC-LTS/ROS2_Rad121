@@ -39,6 +39,14 @@ gp_predictor_node:
     rad_smoothing_window: 5           # Rolling average window before feeding readings into GP training
     gp_noise_variance_min: 0.5        # GP likelihood noise floor; prevents fitting exactly through spikes
     landmark_background_min: 0.3      # Minimum effective background (mrem/hr) used for landmark threshold
+    # Max allowed predictive std dev for a candidate peak in find_peaks_callback.
+    # Was 1.0 (the default): observed phantom detections in bench-scale testing
+    # had std in the 1.0-1.15 range, i.e. right at/above the old cutoff, so it
+    # wasn't actually filtering the marginal, low-confidence local optima that
+    # scipy's random-restart search turns up away from real data. 0.6 was tried
+    # first but suppressed real (weak, ~1.5-2.5 mrem/hr) sources too; 0.8 is the
+    # bench-tested value that filtered phantoms while still confirming a real one.
+    peak_confidence_threshold: 0.8
 
 peak_finder_client_node:
   ros__parameters:
@@ -48,7 +56,11 @@ peak_finder_client_node:
     marker_scale: 0.5
     marker_color_r: [1.0, 0.0, 0.0, 1.0]
     matching_threshold_m: 1.5
-    min_peak_mrem_hr: 0.1
+    # Was 0.1: below rad_simulation's own background_radiation_max (1.0 mrem/hr,
+    # see rad_simulation/params/sensor_simulator.yaml), so background noise alone
+    # could pass the candidate-peak filter. Raised with margin above background
+    # while staying below the smallest real source floor (low_intensity_min=2.5).
+    min_peak_mrem_hr: 1.5
 
 rad_costmap_visualizer_node:
   ros__parameters:
