@@ -288,6 +288,20 @@ class GPPredictor(Node):
         if self._warm_noise_variance is not None:
             gp_model.likelihood.variance = max(self._warm_noise_variance, noise_min)
 
+        # Kernel (signal) variance has no floor of its own -- with
+        # fix_lengthscale and fix_rho both True by default, this is the ONLY
+        # hyperparameter optimize() is actually free to move. Observed
+        # directly: an unconstrained fit collapsed kernel variance toward
+        # zero, which made the posterior predictive variance at any point
+        # not essentially on top of a training sample explode (std ~100),
+        # and since find_peaks_callback never re-optimizes and only warm-
+        # starts from whatever predict_gp last cached, that one pathological
+        # fit then silently rejected every peak candidate for low confidence
+        # on every find_peaks call until a later predict_gp call happened to
+        # recover it. Bounding it the same way as the noise floor above
+        # prevents the optimizer from reaching that regime at all.
+        gp_model.kern.variance.constrain_bounded(1e-3, 1e4)
+
         # Apply Fixed Lengthscale if requested
         if fix_lengthscale:
             gp_model.kern.lengthscale.fix()
@@ -323,7 +337,10 @@ class GPPredictor(Node):
         observed_vals_mean = np.array([s['value'] for s in samples])
 
         gp_model, training_points = self._build_gp_model(observed_x, observed_y, observed_vals_mean, request.mean_value)
-        
+        self.get_logger().info(
+            f"[DIAG find_peaks] samples={len(samples)} gp_model_built={gp_model is not None}",
+            throttle_duration_sec=5.0)
+
         target_model = None
         search_bounds = None
 
@@ -358,28 +375,35 @@ class GPPredictor(Node):
             return -mean[0, 0]
 
         found_peaks = []
+        n_opt_fail = 0
+        n_conf_reject = 0
+        n_dup_reject = 0
+        max_peak_val_seen = float('-inf')
+        min_std_at_success = float('inf')
         for i in range(request.num_starts):
-            start_point = np.random.uniform(low=[search_bounds[0][0], search_bounds[1][0]], 
+            start_point = np.random.uniform(low=[search_bounds[0][0], search_bounds[1][0]],
                                            high=[search_bounds[0][1], search_bounds[1][1]])
-            
+
             result = minimize(
                 fun=objective_function,
                 x0=start_point,
                 method='L-BFGS-B',
                 bounds=search_bounds
             )
-            
+
             if result.success:
                 peak_x, peak_y = result.x
                 peak_val = -result.fun
-                
+                max_peak_val_seen = max(max_peak_val_seen, peak_val)
+
                 # Check confidence at peak
                 _, peak_var = target_model.predict(np.atleast_2d([peak_x, peak_y]))
                 peak_std = np.sqrt(peak_var[0, 0])
+                min_std_at_success = min(min_std_at_success, peak_std)
                 conf_thresh = self.get_parameter('peak_confidence_threshold').get_parameter_value().double_value
-                
+
                 if peak_std > conf_thresh:
-                    # self.get_logger().debug(f"Rejecting peak at ({peak_x:.2f}, {peak_y:.2f}) due to low confidence (std={peak_std:.2f})")
+                    n_conf_reject += 1
                     continue
 
                 is_duplicate = False
@@ -388,9 +412,19 @@ class GPPredictor(Node):
                     if dist_sq < (self.get_parameter('kernel.lengthscale').get_parameter_value().double_value)**2:
                         is_duplicate = True
                         break
-                
+
                 if not is_duplicate:
                     found_peaks.append((peak_x, peak_y, peak_val))
+                else:
+                    n_dup_reject += 1
+            else:
+                n_opt_fail += 1
+
+        self.get_logger().info(
+            f"[DIAG find_peaks] starts={request.num_starts} opt_fail={n_opt_fail} "
+            f"conf_reject={n_conf_reject} dup_reject={n_dup_reject} accepted={len(found_peaks)} "
+            f"max_peak_val={max_peak_val_seen:.3f} min_std_at_success={min_std_at_success:.3f}",
+            throttle_duration_sec=5.0)
 
         for peak in found_peaks:
             p = Point()

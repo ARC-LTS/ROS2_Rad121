@@ -1,10 +1,11 @@
 rad_safety_monitor_node:
   ros__parameters:
     # Hard emergency threshold — intentionally higher than local_recovery's
-    # critical_dose_mrem_hr so only one node drives navigation at a time.
-    # local_recovery handles the 2.0 mrem/hr case with smarter search logic;
-    # this node fires only on truly catastrophic doses as a hard brake.
-    emergency_threshold_mrem_hr: 8.0
+    # acute trigger (10.0) so only one node drives navigation at a time and
+    # the hard brake genuinely is the last resort. 8.0 inverted that ordering
+    # (brake fired before yield/rescue ever engaged); both scale by the same
+    # budget multiplier, so 12.0 preserves the ordering for every k.
+    emergency_threshold_mrem_hr: 12.0
     retreat_distance_m: 2.5
     # Number of consecutive dose readings to average before triggering;
     # prevents false retreats from transient sensor spikes.

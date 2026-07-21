@@ -26,6 +26,15 @@ def launch_setup(context, *args, **kwargs):
             'safe_dose_threshold_mrem_hr': 1000000.0,
         })
 
+    parameters.append({
+        'dose_budget_relaxation_k': float(LaunchConfiguration('dose_relaxation_k').perform(context)),
+        # Sim time, matching explore_node and rad_evaluator_node: the node
+        # integrates cumulative dose via its own clock, and counting wall
+        # seconds against a sim-time dose rate overstates spent budget by
+        # 1/RTF, making its relaxation decay faster than the other layers'.
+        'use_sim_time': True,
+    })
+
     return [Node(
         package='rad_local_recovery',
         executable='local_recovery_node',
@@ -42,6 +51,12 @@ def generate_launch_description():
             description='Set dose thresholds unreachable at construction time, '
                         'disabling local recovery for a radiation-agnostic baseline arm. '
                         'Must be set at launch time (see comment at the parameters list above).',
+        ),
+        DeclareLaunchArgument(
+            'dose_relaxation_k',
+            default_value='0.0',
+            description='Dose-budget-aware relaxation coefficient. 0.0 (default) reproduces '
+                        'the fixed acute_dose_rate_mrem_hr exactly.',
         ),
         OpaqueFunction(function=launch_setup),
     ])

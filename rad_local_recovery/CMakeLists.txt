@@ -19,6 +19,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(ros2_rad_map REQUIRED)
+find_package(action_msgs REQUIRED)
 
 add_executable(local_recovery_node src/local_recovery_node.cpp)
 ament_target_dependencies(local_recovery_node
@@ -36,8 +37,29 @@ ament_target_dependencies(local_recovery_node
   ros2_rad_map
 )
 
+# General-purpose, radiation-independent stuck-detection watchdog: monitors
+# actual odometry movement (not just goal status) while a navigate_to_pose
+# goal is executing, and physically backs the robot away if it hasn't
+# moved for stuck_timeout_s. Was written but never added to the build or
+# any launch file -- previously the only things that could get the robot
+# out of a geometric dead end (a corner, independent of radiation) were
+# Nav2's own recovery escalation (rarely triggered -- observed 5+ silent
+# "Failed to make progress" retries before a single real recovery fired)
+# and explore_lite's frontier replanning (which only picks a new target;
+# it doesn't physically move the robot out of a spot no path can leave).
+add_executable(stuck_escape_node src/stuck_escape_node.cpp)
+ament_target_dependencies(stuck_escape_node
+  rclcpp
+  rclcpp_action
+  nav_msgs
+  nav2_msgs
+  geometry_msgs
+  action_msgs
+)
+
 install(TARGETS
   local_recovery_node
+  stuck_escape_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
