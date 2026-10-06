@@ -36,12 +36,16 @@ public:
         this->declare_parameter<int>("dose_confirmation_count", 3);
         this->declare_parameter<double>("critical_dose_mrem_hr", 2.0);
         this->declare_parameter<double>("acute_dose_rate_mrem_hr", 10.0);
-        this->declare_parameter<double>("safe_dose_threshold_mrem_hr", 0.25);
+        // Aligned with params/local_recovery.yaml (was 0.25 here against 1.0
+        // there). The YAML wins wherever it is loaded, so deployment was
+        // unaffected, but any launch path that omits it silently produced a
+        // materially different robot -- a four-fold tighter resume threshold.
+        this->declare_parameter<double>("safe_dose_threshold_mrem_hr", 1.0);
         this->declare_parameter<double>("recovery_search_distance_m", 15.0); // Increased radius
         this->declare_parameter<std::string>("robot_base_frame", "base_link");
         this->declare_parameter<std::string>("map_frame", "map");
-        this->declare_parameter<double>("fallback_retreat_distance_m", 2.0);
-        this->declare_parameter<bool>("return_to_origin", true);
+        this->declare_parameter<double>("fallback_retreat_distance_m", 3.0);  // matches YAML
+        this->declare_parameter<bool>("return_to_origin", false);  // matches YAML
         this->declare_parameter<double>("origin_x", 0.0);
         this->declare_parameter<double>("origin_y", 0.0);
         this->declare_parameter<std::string>("stop_explore_service", "/explore_node/stop");
@@ -49,6 +53,17 @@ public:
         // Dose-budget-aware relaxation of acute_dose_rate_ -- mirrors
         // rad_safety_monitor_node's own effectiveThreshold(). k=0 reproduces
         // the fixed threshold exactly.
+        // Hard ceiling on how many distinct recovery episodes one mission may
+        // run. consecutive_recovery_failures_ resets to zero on every
+        // successful resume, so it bounds a losing streak but not the total:
+        // a robot oscillating across the resume threshold can cycle
+        // recover -> resume -> recover indefinitely on the cooldown interval
+        // and consume the entire mission clock without ever failing four
+        // times in a row. 0 (default) preserves the original unbounded
+        // behavior; when positive, exploration is left running once the cap
+        // is hit rather than being stopped again, so the mission ends on its
+        // own terms instead of on the wall clock.
+        this->declare_parameter<int>("max_recovery_episodes", 0);
         this->declare_parameter<double>("dose_budget_relaxation_k", 0.0);
         this->declare_parameter<double>("dose_budget_relaxation_ceiling_mult", 2.0);
         this->declare_parameter<double>("max_radiation_dose_mrem", 100.0);
@@ -57,6 +72,7 @@ public:
         critical_dose_ = this->get_parameter("critical_dose_mrem_hr").as_double();
         acute_dose_rate_ = this->get_parameter("acute_dose_rate_mrem_hr").as_double();
         safe_dose_threshold_ = this->get_parameter("safe_dose_threshold_mrem_hr").as_double();
+        max_recovery_episodes_ = static_cast<int>(this->get_parameter("max_recovery_episodes").as_int());
         recovery_search_distance_ = this->get_parameter("recovery_search_distance_m").as_double();
         robot_base_frame_ = this->get_parameter("robot_base_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
@@ -286,6 +302,16 @@ private:
             return;
         }
 
+        if (max_recovery_episodes_ > 0 && !is_recovering_ &&
+            recovery_episodes_ >= max_recovery_episodes_)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 30000,
+                "Recovery episode cap (%d) reached; leaving exploration running and "
+                "deferring to the dose-budget and emergency-brake layers.",
+                max_recovery_episodes_);
+            return;
+        }
+
         auto now = this->get_clock()->now();
 
         // Don't preempt an active recovery within the cooldown window
@@ -467,6 +493,7 @@ private:
 
         nav_action_client_->async_send_goal(*goal_msg, send_goal_options);
         last_goal_time_ = now;
+        if (!is_recovering_) recovery_episodes_++;
         is_recovering_ = true;
     }
     
@@ -713,6 +740,8 @@ private:
     double critical_dose_;      // cost-function / safe-zone threshold (2.0 mrem/hr)
     double acute_dose_rate_;    // hard evacuation trigger (10.0 mrem/hr)
     double safe_dose_threshold_;
+    int max_recovery_episodes_{0};
+    int recovery_episodes_{0};
     double recovery_search_distance_;
     std::string robot_base_frame_;
     std::string map_frame_;

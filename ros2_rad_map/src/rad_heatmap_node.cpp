@@ -55,6 +55,23 @@ public:
         this->declare_parameter<double>("raycasting_max_distance_m", 10.0);
         this->declare_parameter<double>("gp_update_frequency", 0.2);
 
+        // Known-field oracle. When true, the published heatmap is replaced by the
+        // analytic true radiation field (the simulator's own inverse-square point-
+        // source model) over the entire mapped extent, with near-zero uncertainty
+        // and no visibility-mask restriction, so the robot has perfect radiation
+        // knowledge wherever the map exists rather than having to estimate it from
+        // sparse measurements. This is the estimation-quality ablation for the
+        // H1/H2 dose-and-safety null: if a perfect field lets the informed strategy
+        // beat the radiation-blind baseline on dose efficiency and violations, the
+        // exploration null was an estimation limit; if not, it was a strategy limit.
+        // false (default) reproduces the GP-estimated pipeline exactly. It is an
+        // upper-bound diagnostic, not an operational mode -- a real survey does not
+        // know the field a priori. effective_range matches the sensor simulator so
+        // the injected field is the one the robot would converge to given perfect
+        // measurements.
+        this->declare_parameter<bool>("known_field_mode", false);
+        this->declare_parameter<double>("known_field_effective_range_m", 2.0);
+
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
         background_threshold_mrem_hr_ = this->get_parameter("background_threshold_mrem_hr").as_double();
@@ -62,6 +79,8 @@ public:
         raycasting_max_sources_ = this->get_parameter("raycasting_max_sources").as_int();
         raycasting_max_distance_m_ = this->get_parameter("raycasting_max_distance_m").as_double();
         double gp_update_frequency = this->get_parameter("gp_update_frequency").as_double();
+        known_field_mode_ = this->get_parameter("known_field_mode").as_bool();
+        known_field_effective_range_ = this->get_parameter("known_field_effective_range_m").as_double();
 
         rclcpp::QoS map_qos(rclcpp::KeepLast(1));
         map_qos.transient_local().reliable();
@@ -77,6 +96,30 @@ public:
         zone_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
             "/radiation_zone_markers", 10,
             std::bind(&DynamicRadiationHeatmapNode::zoneCallback, this, std::placeholders::_1));
+
+        // Only subscribe to ground truth when the oracle is active. Parses the
+        // same /rad_field_server/sources SPHERE markers the evaluator reads;
+        // intensity is recovered from marker scale by the inverse of the
+        // simulator's normalization (scale = intensity_norm * 0.8 + 0.2,
+        // intensity = norm * 7.5 + 2.5).
+        if (known_field_mode_) {
+            known_src_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
+                "/rad_field_server/sources", 10,
+                [this](const visualization_msgs::msg::MarkerArray::SharedPtr msg) {
+                    std::vector<KnownSource> srcs;
+                    for (const auto &m : msg->markers) {
+                        if (m.action != visualization_msgs::msg::Marker::ADD ||
+                            m.type != visualization_msgs::msg::Marker::SPHERE) continue;
+                        double norm = (m.scale.x - 0.2) / 0.8;
+                        srcs.push_back({m.pose.position.x, m.pose.position.y, norm * 7.5 + 2.5});
+                    }
+                    std::lock_guard<std::mutex> lock(known_src_mutex_);
+                    known_sources_ = std::move(srcs);
+                });
+            RCLCPP_WARN(this->get_logger(),
+                "KNOWN-FIELD ORACLE ACTIVE: heatmap will publish the analytic true field, "
+                "not the GP estimate. Localization is near-circular in this mode.");
+        }
 
         image_transport::ImageTransport it(this->shared_from_this());
         historical_heatmap_pub_ = it.advertise("/rad_heatmap/historical_mean", 1);
@@ -178,6 +221,7 @@ private:
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr rad_sub_;
     rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr zone_sub_;
+    rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr known_src_sub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_maps_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
     rclcpp::TimerBase::SharedPtr gp_update_timer_;
@@ -201,6 +245,13 @@ private:
     double current_background_level_;
     int raycasting_max_sources_;
     double raycasting_max_distance_m_;
+
+    // Known-field oracle state.
+    struct KnownSource { double x, y, intensity; };
+    bool known_field_mode_{false};
+    double known_field_effective_range_{2.0};
+    std::vector<KnownSource> known_sources_;
+    std::mutex known_src_mutex_;
 
     void zoneCallback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
     {
@@ -705,6 +756,39 @@ private:
                         if (is_visible || (is_occupied && uncertainty < 2.0f)) {
                             hist_mean_occluded.at<float>(r, c) = hist_mean_raw.at<float>(r, c);
                             hist_std_occluded.at<float>(r, c) = hist_std_raw.at<float>(r, c);
+                        }
+                    }
+                }
+
+                // Known-field oracle: overwrite the estimated field with the
+                // analytic true field over every mapped cell, bypassing the
+                // visibility mask so radiation is known wherever the map extends
+                // (not only where it has been measured). Uses the simulator's own
+                // point-source model, intensity * min(1, range^2/r^2), summed over
+                // sources plus the current background estimate. std is pinned near
+                // zero: the field is treated as certain.
+                if (known_field_mode_) {
+                    std::vector<KnownSource> srcs;
+                    { std::lock_guard<std::mutex> lock(known_src_mutex_); srcs = known_sources_; }
+                    const double res = map_copy.info.resolution;
+                    const double ox = map_copy.info.origin.position.x;
+                    const double oy = map_copy.info.origin.position.y;
+                    const double er_sq = known_field_effective_range_ * known_field_effective_range_;
+                    const double bg_lvl = current_background_level_;
+                    for (int r = 0; r < hist_mean_occluded.rows; ++r) {
+                        for (int c = 0; c < hist_mean_occluded.cols; ++c) {
+                            unsigned int map_grid_y = map_copy.info.height - 1 - r;
+                            double wx = ox + (c + 0.5) * res;
+                            double wy = oy + (map_grid_y + 0.5) * res;
+                            double val = bg_lvl;
+                            for (const auto &s : srcs) {
+                                double dx = wx - s.x, dy = wy - s.y;
+                                double dsq = dx * dx + dy * dy;
+                                double ratio = (dsq > 1e-9) ? std::min(1.0, er_sq / dsq) : 1.0;
+                                val += s.intensity * ratio;
+                            }
+                            hist_mean_occluded.at<float>(r, c) = static_cast<float>(val);
+                            hist_std_occluded.at<float>(r, c) = 0.01f;
                         }
                     }
                 }

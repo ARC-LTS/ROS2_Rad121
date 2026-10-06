@@ -13,28 +13,100 @@ from tf2_geometry_msgs import PoseStamped
 import pickle
 import os
 
+class LowFidelityPrior:
+    """The offline multi-fidelity model, exposed in live sensor units (mrem/hr).
+
+    The offline pipeline fits its GPs to log(1+y) targets and models the
+    high-fidelity field as
+
+        log(1 + f_h(x)) = log(1 + f_l(x)) + delta(x),
+
+    so the fused estimate in linear units is expm1(mu_l + mu_delta). Two things
+    used to go wrong at this boundary, and both are handled here so that every
+    consumer in this node sees the prior in the same units as /rad:
+
+    1. No inverse transform was applied. A log-space quantity (range ~0.2 to
+       2.9 for the UFTR model) was used directly as a mean function for
+       observations in mrem/hr (range ~0.27 to 17.4), leaving the trainable rho
+       to absorb the unit mismatch. rho consequently fitted to ~2.8-3.3 and
+       carried no physical meaning; with the transform applied it fits to
+       ~0.75-0.93, i.e. close to unity as expected. A side effect was that
+       ``low_fi_max_prior`` was being compared against log-space values, so a
+       cap intended as "100 mrem/hr" either never bound at all or, when tuned
+       down to work around the symptom, clamped the prior to a constant.
+
+    2. The discrepancy GP was ignored. The serialized model contains both
+       ``gp_lo`` and ``gp_delta``, but only ``gp_lo`` was ever read, so the
+       spatially varying correction learned from the A-11 control survey never
+       reached the live map: only its global level was recovered, via rho.
+
+    ``predict`` returns (mean, variance) in mrem/hr and is signature-compatible
+    with a GPy model, so this object can stand in wherever the raw ``gp_lo``
+    was used before.
+    """
+
+    def __init__(self, gp_lo, gp_delta=None, transform='log1p', use_discrepancy=True):
+        self.gp_lo = gp_lo
+        self.gp_delta = gp_delta if use_discrepancy else None
+        if transform not in ('log1p', 'none'):
+            raise ValueError(f"unknown prior transform '{transform}'")
+        self.transform = transform
+
+    @property
+    def uses_discrepancy(self):
+        return self.gp_delta is not None
+
+    def predict(self, X):
+        X = np.atleast_2d(X)
+        mu, var = self.gp_lo.predict(X)
+        if self.gp_delta is not None:
+            mu_d, var_d = self.gp_delta.predict(X)
+            mu = mu + mu_d
+            # GP_lo and GP_delta are fitted on disjoint data and delta is
+            # conditioned on GP_lo's point estimate, so the modular estimator
+            # treats them as independent and the variances add.
+            var = var + var_d
+        if self.transform == 'log1p':
+            # Delta-method back-transform: d/dm expm1(m) = exp(m).
+            var = np.square(np.exp(mu)) * var
+            mu = np.expm1(mu)
+        # A dose rate cannot be negative. The fused log-space mean can dip below
+        # zero where the discrepancy GP corrects a cold region downwards, which
+        # after expm1 yields a small negative rate (about a quarter of the UFTR
+        # cell, down to -0.28 mrem/hr). Left unclamped this biases the live fit
+        # low exactly where the field is weakest, so the mean is floored here.
+        # The variance is deliberately left untouched: the uncertainty at those
+        # cells is real and should still widen the predictive interval.
+        return np.maximum(mu, 0.0), var
+
+    def predict_std(self, X):
+        mu, var = self.predict(X)
+        return mu, np.sqrt(np.maximum(var, 0.0))
+
+
 class LowFiMapping(GPy.core.Mapping):
-    def __init__(self, low_fi_model, initial_rho=1.0, max_prior=100.0):
+    """rho * min(prior(x), C_max) as a GPy mean function, in mrem/hr."""
+
+    def __init__(self, prior, initial_rho=1.0, max_prior=100.0):
         super().__init__(input_dim=2, output_dim=1)
-        self.low_fi_model = low_fi_model
+        self.prior = prior
         # Create rho as a GPy parameter so it can be optimized
         self.rho = GPy.core.parameterization.Param('rho', initial_rho)
         self.max_prior = max_prior
         self.link_parameter(self.rho)
 
+    def _base(self, X):
+        m, _ = self.prior.predict(np.atleast_2d(X))
+        # Cap in mrem/hr, after the inverse transform, so the bound means what
+        # its units say and cannot be reached by a log-space value.
+        return np.minimum(m, self.max_prior)
+
     def f(self, X):
-        X = np.atleast_2d(X)
-        m, _ = self.low_fi_model.predict(X)
-        # Cap the low-fi prediction at max_prior to avoid biasing high-fi GP too much
-        m_capped = np.minimum(m, self.max_prior)
-        return self.rho * m_capped
+        return self.rho * self._base(X)
 
     def update_gradients(self, dL_dF, X):
-        X = np.atleast_2d(X)
-        m, _ = self.low_fi_model.predict(X)
-        m_capped = np.minimum(m, self.max_prior)
-        # dL/drho = sum( dL/df * df/drho ) = sum( dL/df * m_capped )
-        self.rho.gradient = np.sum(dL_dF * m_capped)
+        # dL/drho = sum( dL/df * df/drho ) = sum( dL/df * base )
+        self.rho.gradient = np.sum(dL_dF * self._base(X))
 
 class GPPredictor(Node):
     def __init__(self):
@@ -50,7 +122,15 @@ class GPPredictor(Node):
         self.declare_parameter('model_path', '')
         self.declare_parameter('initial_rho', 1.0)
         self.declare_parameter('fix_rho', False)
-        self.declare_parameter('low_fi_max_prior', 100.0) # New: Cap the prior from low-fi model
+        self.declare_parameter('low_fi_max_prior', 100.0) # Cap on the prior contribution, in mrem/hr
+        # The offline pipeline trains on log(1+y), so the serialized model must
+        # be inverse-transformed before it can be used against /rad readings in
+        # mrem/hr. Set to 'none' only for a prior that was fitted in linear units.
+        self.declare_parameter('prior_transform', 'log1p')
+        # Whether to include the offline discrepancy GP (the A-11 correction) in
+        # the prior mean. False reproduces the pre-fix behaviour of using the
+        # low-fidelity process alone.
+        self.declare_parameter('use_discrepancy', True)
         self.declare_parameter('landmark_buffer_size', 500)
         self.declare_parameter('landmark_spatial_dist', 0.2)
         self.declare_parameter('peak_confidence_threshold', 1.0) # Max allowed std dev
@@ -84,6 +164,7 @@ class GPPredictor(Node):
 
         # Multi-fidelity state
         self.gp_lo = None
+        self.prior = None
         self.load_low_fi_model()
 
         self.rad_sub = self.create_subscription(
@@ -112,15 +193,53 @@ class GPPredictor(Node):
             self.get_logger().warn(f"Model path '{model_path}' invalid or empty. Multi-fidelity disabled.")
             return
 
+        transform = self.get_parameter('prior_transform').get_parameter_value().string_value
+        use_delta = self.get_parameter('use_discrepancy').get_parameter_value().bool_value
+
         try:
             with open(model_path, 'rb') as f:
                 data = pickle.load(f)
-            
-            if isinstance(data, dict) and 'gp_lo' in data:
-                self.gp_lo = data['gp_lo']
-                self.get_logger().info(f"Loaded low-fidelity model from {model_path}")
-            else:
+
+            if not (isinstance(data, dict) and 'gp_lo' in data):
                 self.get_logger().error(f"Pickle at {model_path} does not contain 'gp_lo'.")
+                return
+
+            gp_lo = data['gp_lo']
+            gp_delta = data.get('gp_delta')
+            if gp_delta is None and use_delta:
+                self.get_logger().warn(
+                    "Model contains no 'gp_delta'; the A-11 discrepancy correction "
+                    "will not be applied and the prior is the low-fidelity field alone.")
+
+            self.prior = LowFidelityPrior(gp_lo, gp_delta, transform=transform,
+                                          use_discrepancy=use_delta)
+            self.gp_lo = gp_lo   # retained for diagnostics only
+
+            # Sanity-check the configured transform against the model's own
+            # training targets. A log(1+y) model of this field tops out near 3;
+            # a linear one near 17. Getting this wrong silently is exactly the
+            # failure this check exists to catch, so warn loudly rather than
+            # guessing.
+            try:
+                y_max = float(np.max(gp_lo.Y))
+                if transform == 'log1p' and y_max > 10.0:
+                    self.get_logger().warn(
+                        f"prior_transform='log1p' but the model's training targets reach "
+                        f"{y_max:.2f}, which looks like linear mrem/hr. Check the setting.")
+                elif transform == 'none' and y_max < 5.0:
+                    self.get_logger().warn(
+                        f"prior_transform='none' but the model's training targets only reach "
+                        f"{y_max:.2f}, which looks like log(1+y). Check the setting.")
+                span = self.prior.predict(gp_lo.X)[0]
+                self.get_logger().info(
+                    f"Loaded prior from {model_path}: transform={transform}, "
+                    f"discrepancy={'on' if self.prior.uses_discrepancy else 'off'}, "
+                    f"stored target max={y_max:.3f}, "
+                    f"prior range at training points = "
+                    f"[{float(np.min(span)):.3f}, {float(np.max(span)):.3f}] mrem/hr")
+            except Exception as diag_e:
+                self.get_logger().info(f"Loaded prior from {model_path} "
+                                       f"(range diagnostics unavailable: {diag_e})")
         except Exception as e:
             self.get_logger().error(f"Failed to load low-fi model: {e}")
 
@@ -266,9 +385,9 @@ class GPPredictor(Node):
         if not fix_rho and self._warm_rho is not None:
             init_rho = self._warm_rho
 
-        if use_mf and self.gp_lo is not None:
-            # Multi-fidelity mode: use low-fi model as mean with trainable rho
-            mf = LowFiMapping(self.gp_lo, initial_rho=init_rho, max_prior=max_prior)
+        if use_mf and self.prior is not None:
+            # Multi-fidelity mode: offline prior as mean function with trainable rho
+            mf = LowFiMapping(self.prior, initial_rho=init_rho, max_prior=max_prior)
         elif mean_value is not None:
             # Single-fidelity mode: use constant background mean
             mf = GPy.mappings.Constant(input_dim=2, output_dim=1, value=mean_value)
@@ -283,6 +402,19 @@ class GPPredictor(Node):
         # Enforce a noise variance floor so optimize() cannot collapse noise to near-zero
         # and interpolate exactly through spike values.
         noise_min = self.get_parameter('gp_noise_variance_min').get_parameter_value().double_value
+        # chap5 sharpness-RECOVERY pilot: env RAMONES_GP_NOISE_MIN lowers the noise
+        # floor -> tighter interpolation -> sharper posterior-mean peaks -> peak argmax
+        # closer to the true source -> better localization. Unlike the (invalid) gpv
+        # kern-variance revert, this stays WITHIN the stable regime: the :422 kernel-
+        # variance bound is untouched, so no std~100 collapse. Default (unset) = current.
+        _nm_env = os.environ.get('RAMONES_GP_NOISE_MIN')
+        if _nm_env is not None:
+            try:
+                noise_min = float(_nm_env)
+                self.get_logger().warn(f"RAMONES_GP_NOISE_MIN={noise_min} (sharpness-recovery pilot)",
+                                       throttle_duration_sec=60.0)
+            except ValueError:
+                pass
         if noise_min > 0.0:
             gp_model.likelihood.variance.constrain_bounded(noise_min, 1e4)
         if self._warm_noise_variance is not None:
@@ -300,7 +432,19 @@ class GPPredictor(Node):
         # on every find_peaks call until a later predict_gp call happened to
         # recover it. Bounding it the same way as the noise floor above
         # prevents the optimizer from reaching that regime at all.
-        gp_model.kern.variance.constrain_bounded(1e-3, 1e4)
+        #
+        # ISOLATION TOGGLE (chap5 GP-vintage batch): set env RAMONES_GP_KERN_UNBOUNDED=1
+        # to SKIP this bound and reproduce the pre-2026-07-20 pre-fix behaviour on the
+        # current stack -- used to size the residual (non-escape) driver of the
+        # rt->effret H1 flip. Default (unset/0) keeps the fix. Env-var, not a ROS param,
+        # to avoid launch-file plumbing; propagates batch-shell -> run_trial -> launch -> node.
+        if os.environ.get('RAMONES_GP_KERN_UNBOUNDED', '0') != '1':
+            gp_model.kern.variance.constrain_bounded(1e-3, 1e4)
+        else:
+            self.get_logger().warn(
+                "RAMONES_GP_KERN_UNBOUNDED=1: kernel-variance bound DISABLED "
+                "(pre-fix GP vintage -- isolation experiment)",
+                throttle_duration_sec=60.0)
 
         # Apply Fixed Lengthscale if requested
         if fix_lengthscale:
@@ -362,8 +506,11 @@ class GPPredictor(Node):
             search_bounds = [(min_x, max_x), (min_y, max_y)]
         else:
             use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
-            if use_mf and self.gp_lo is not None:
-                target_model = self.gp_lo
+            if use_mf and self.prior is not None:
+                # LowFidelityPrior.predict is signature-compatible with a GPy
+                # model and returns mrem/hr, so the peak thresholds downstream
+                # are compared against the same units the sensor reports.
+                target_model = self.prior
                 # Use a default large bound for low-fi peak finding if no data
                 search_bounds = [(-50.0, 50.0), (-50.0, 50.0)] 
             else:
@@ -401,7 +548,24 @@ class GPPredictor(Node):
                 peak_std = np.sqrt(peak_var[0, 0])
                 min_std_at_success = min(min_std_at_success, peak_std)
                 conf_thresh = self.get_parameter('peak_confidence_threshold').get_parameter_value().double_value
+                # chap5 recovery pilot: lowering the noise floor shifts the std
+                # distribution, so allow co-tuning the accept gate to hold yield.
+                _ct_env = os.environ.get('RAMONES_GP_CONF_THRESH')
+                if _ct_env is not None:
+                    try:
+                        conf_thresh = float(_ct_env)
+                    except ValueError:
+                        pass
 
+                # This threshold is in mrem/hr and was bench-tuned against the
+                # fitted GP, whose std is floored near 0.71 by the noise-variance
+                # bound. Before the prior units were corrected, the cold-start
+                # branch above compared a *log-space* std (median 0.54 over the
+                # cell) against the same number, so it was spuriously permissive
+                # and accepted phantom peaks before any live data had arrived.
+                # Both branches now report mrem/hr, so the filter means the same
+                # thing in each; the cold-start branch is correspondingly
+                # stricter than it used to be (linear std has median 0.93).
                 if peak_std > conf_thresh:
                     n_conf_reject += 1
                     continue
@@ -450,9 +614,8 @@ class GPPredictor(Node):
             if gp_model is None:
                 # ... (keep existing low-fi fallback)
                 use_mf = self.get_parameter('use_multi_fidelity').get_parameter_value().bool_value
-                if use_mf and self.gp_lo is not None:
-                    mean_prediction, var_prediction = self.gp_lo.predict(points_to_predict)
-                    std_dev_prediction = np.sqrt(var_prediction)
+                if use_mf and self.prior is not None:
+                    mean_prediction, std_dev_prediction = self.prior.predict_std(points_to_predict)
                     response.predicted_mean = np.maximum(0, mean_prediction).flatten().tolist() 
                     response.predicted_std_dev = np.maximum(0, std_dev_prediction).flatten().tolist()
                 return response

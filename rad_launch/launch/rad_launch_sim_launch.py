@@ -6,6 +6,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     rad_launch_share = get_package_share_directory('rad_launch')
@@ -103,6 +104,24 @@ def generate_launch_description():
                     'the cap and reproduces the original behavior exactly.',
     )
 
+    radiation_seek_trap_avoid_radius_arg = DeclareLaunchArgument(
+        'radiation_seek_trap_avoid_radius_m',
+        default_value='0.0',
+        description='Deny the seek bonus within this radius of a recent '
+                    'stuck-escape location. 0.0 (default) disables trap '
+                    'avoidance and reproduces the original behavior exactly.',
+    )
+
+    blacklist_ttl_s_arg = DeclareLaunchArgument(
+        'blacklist_ttl_s',
+        default_value='0.0',
+        description='Seconds after which a blacklisted frontier is eligible '
+                    'again, so an accumulating blacklist cannot strand residual '
+                    'frontiers and complete early with partial coverage. 0.0 '
+                    '(default) keeps entries permanent, reproducing every trial '
+                    'to date exactly.',
+    )
+
     safety_agnostic_arg = DeclareLaunchArgument(
         'safety_agnostic',
         default_value='false',
@@ -110,6 +129,57 @@ def generate_launch_description():
                     'hard emergency brake for a fully radiation-oblivious Baseline arm. '
                     'Distinct from radiation_agnostic; must stay false for every '
                     'confirmatory H1-H4 trial.',
+    )
+
+    escape_distance_m_arg = DeclareLaunchArgument(
+        'escape_distance_m',
+        default_value='0.0',
+        description='Close stuck_escape_node\'s backup on measured odometry '
+                    'displacement instead of elapsed time. 0.0 (default) keeps the '
+                    'original time-based escape (0.25 m at default speed/duration, '
+                    'which does not clear the costmap inflation band).',
+    )
+
+    idle_stall_timeout_s_arg = DeclareLaunchArgument(
+        'idle_stall_timeout_s',
+        default_value='0.0',
+        description='Report a robot stationary with no navigation goal executing for '
+                    'this long on /stuck_escape/idle_stall. 0.0 (default) disables. '
+                    'The wedge watchdog cannot see this state, so it otherwise '
+                    'reports stuck_count 0 for a mission that never moved.',
+    )
+
+    spin_target_yaw_rad_arg = DeclareLaunchArgument(
+        'spin_target_yaw_rad',
+        default_value='3.14159',
+        description='Reorientation angle at the end of a stuck escape. Couples to '
+                    'explore_node\'s rear-hemisphere frontier penalty; see the '
+                    'comment at stuck_escape_node below.',
+    )
+
+    max_recovery_episodes_arg = DeclareLaunchArgument(
+        'max_recovery_episodes',
+        default_value='0',
+        description='Cap on dose-triggered recovery episodes per mission; 0 (default) '
+                    'is unbounded and reproduces every trial to date.',
+    )
+
+    known_field_mode_arg = DeclareLaunchArgument(
+        'known_field_mode',
+        default_value='false',
+        description='Known-field oracle: the heatmap publishes the analytic true '
+                    'radiation field instead of the GP estimate (perfect radiation '
+                    'knowledge over the mapped extent). false (default) reproduces '
+                    'every trial to date. Diagnostic ablation for the H1/H2 null; '
+                    'localization is near-circular in this mode.',
+    )
+
+    retreat_dose_mrem_hr_arg = DeclareLaunchArgument(
+        'retreat_dose_mrem_hr',
+        default_value='2.0',
+        description='Instantaneous dose-rate threshold that triggers local_recovery_node\'s '
+                    'actual hard-brake retreat. 2.0 (default) reproduces every confirmatory '
+                    'trial to date exactly.',
     )
 
     # --- 1. Core Gazebo Simulation (Husky robot) ---
@@ -169,7 +239,10 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(rad_launch_share, 'launch', 'rad_heatmap_launch.py')
-                )
+                ),
+                launch_arguments=[
+                    ('known_field_mode', LaunchConfiguration('known_field_mode')),
+                ]
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -204,6 +277,8 @@ def generate_launch_description():
                     ('radiation_seek_adaptive', LaunchConfiguration('radiation_seek_adaptive')),
                     ('radiation_survey_dirs', LaunchConfiguration('radiation_survey_dirs')),
                     ('radiation_survey_time_cap_s', LaunchConfiguration('radiation_survey_time_cap_s')),
+                    ('radiation_seek_trap_avoid_radius_m', LaunchConfiguration('radiation_seek_trap_avoid_radius_m')),
+                    ('blacklist_ttl_s', LaunchConfiguration('blacklist_ttl_s')),
                 ]
             ),
             IncludeLaunchDescription(
@@ -213,6 +288,8 @@ def generate_launch_description():
                 launch_arguments=[
                     ('radiation_agnostic', LaunchConfiguration('radiation_agnostic')),
                     ('dose_relaxation_k', LaunchConfiguration('dose_relaxation_k')),
+                    ('retreat_dose_mrem_hr', LaunchConfiguration('retreat_dose_mrem_hr')),
+                    ('max_recovery_episodes', LaunchConfiguration('max_recovery_episodes')),
                 ]
             ),
             # Hard emergency-stop backstop. Deliberately NOT gated on
@@ -256,6 +333,25 @@ def generate_launch_description():
                     # position and firing false-positive "stuck" triggers
                     # every ~16s regardless of the robot's real state).
                     'odom_topic': '/odom',
+                    'escape_distance_m': ParameterValue(
+                        LaunchConfiguration('escape_distance_m'), value_type=float),
+                    'idle_stall_timeout_s': ParameterValue(
+                        LaunchConfiguration('idle_stall_timeout_s'), value_type=float),
+                    # The escape ends with a Spin, whose magnitude is coupled to
+                    # explore_node's frontier orientation term in a way neither
+                    # node knows about: that term applies a 1e6 penalty to
+                    # frontiers in the rear hemisphere, so a pi-radian spin does
+                    # not merely reorient the robot, it inverts which frontiers
+                    # are admissible at all. The robot escapes a trap, turns to
+                    # face the way it came, and the planner's cheapest remaining
+                    # options are now behind it -- back toward the obstacle it
+                    # just retreated from. Smaller values break the
+                    # face-the-same-wall-again failure the spin exists to
+                    # prevent without fully inverting the frontier ordering;
+                    # pi (default) reproduces the behavior all trials to date
+                    # were collected under.
+                    'spin_target_yaw_rad': ParameterValue(
+                        LaunchConfiguration('spin_target_yaw_rad'), value_type=float),
                 }],
             ),
             # Optional: orbital survey of discovered radiation zones.
@@ -307,10 +403,43 @@ def generate_launch_description():
         )]
     )
 
+    # Ground-truth robot pose for the H3 source-approach metric. The recorded
+    # /localization_pose is the SLAM ESTIMATE (map frame, carries the trial's
+    # localization error) and /tf only holds the SLAM chain -- neither gives the
+    # robot's TRUE world position, so a closest-approach-to-source metric built
+    # on them is dominated by localization + coverage noise (verified: 3/5 coin
+    # flip with 0.3-6m swings). The robot's PosePublisher (gazebo.urdf.xacro,
+    # 50Hz, use_pose_vector_msg) already emits true poses on /model/robot/pose;
+    # the Pose_V->TFMessage bridge preserves entity names, so downstream we take
+    # the transform whose child_frame_id == "robot" (the model's world pose).
+    # NB: bridge /model/robot/pose, NOT /world/<world>/pose/info -- the gz world's
+    # internal name is "warehouse", not the SDF filename "warehouse_barricaded",
+    # so a world-arg-templated topic subscribes to nothing (verified live: pub
+    # count 1, zero messages). /model/robot/pose is fixed across worlds (verified
+    # flowing at 45.5Hz). Off by default; a trial opts in via run_trial.py
+    # --record-ground-truth, which also launches the lightweight recorder.
+    record_ground_truth_arg = DeclareLaunchArgument(
+        'record_ground_truth',
+        default_value='false',
+        description='Bridge the robot PosePublisher (/model/robot/pose) to '
+                    '/ground_truth/tf for the H3 approach metric. Off by default.',
+    )
+    ground_truth_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='ground_truth_pose_bridge',
+        output='log',
+        condition=IfCondition(LaunchConfiguration('record_ground_truth')),
+        arguments=['/model/robot/pose@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V'],
+        remappings=[('/model/robot/pose', '/ground_truth/tf')],
+    )
+
     return LaunchDescription([
         orbit_surveys_arg,
         headless_arg,
         world_arg,
+        record_ground_truth_arg,
+        ground_truth_bridge,
         radiation_agnostic_arg,
         gp_mode_arg,
         dose_relaxation_k_arg,
@@ -319,7 +448,15 @@ def generate_launch_description():
         radiation_seek_adaptive_arg,
         radiation_survey_dirs_arg,
         radiation_survey_time_cap_arg,
+        radiation_seek_trap_avoid_radius_arg,
+        blacklist_ttl_s_arg,
         safety_agnostic_arg,
+        retreat_dose_mrem_hr_arg,
+        escape_distance_m_arg,
+        idle_stall_timeout_s_arg,
+        spin_target_yaw_rad_arg,
+        max_recovery_episodes_arg,
+        known_field_mode_arg,
         gz_launch,
         simulation_launch,
         slam_launch,

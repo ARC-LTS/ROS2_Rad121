@@ -28,6 +28,56 @@ public:
         this->declare_parameter<double>("spin_target_yaw_rad", 3.14159);
         this->declare_parameter<double>("spin_timeout_s", 8.0);
 
+        // Close the escape maneuver on measured odometry displacement rather
+        // than on elapsed time. Two defects motivate this, and one parameter
+        // fixes both:
+        //
+        //  (1) The time-based escape covers escape_speed * escape_duration =
+        //      0.25 m at the defaults, against a 1.1 x 0.9 m footprint and a
+        //      0.4-0.5 m costmap inflation radius. A quarter metre does not
+        //      clear the inflated band the robot was wedged in, let alone the
+        //      obstacle, so the watchdog re-triggers on the next cycle -- the
+        //      most direct explanation available for stuck counts in the
+        //      20-60 range on cluttered maps.
+        //
+        //  (2) This node runs with use_sim_time:=true, so stuck detection is
+        //      measured on the sim clock via now(), but the escape state
+        //      machine below runs on create_wall_timer. Whenever the real-time
+        //      factor drops the backup shrinks in sim-space by exactly that
+        //      factor while the stuck threshold does not. Measured across 114
+        //      wallclock-capped trials the sim/wall ratio is a median 1.006
+        //      but reaches 0.604 at worst, with 22 of 114 below 0.9, so the
+        //      escape silently loses up to 40% of its travel precisely when
+        //      host load is already making the robot struggle. A displacement
+        //      target is immune to the discrepancy because it is measured in
+        //      the same space the robot actually moves in.
+        //
+        // 0.0 (default) keeps the original purely time-based behavior, so
+        // previously collected trials remain reproducible. When positive, the
+        // drive phase ends at whichever of the displacement target or
+        // escape_max_duration_s comes first, the latter bounding the case
+        // where the robot genuinely cannot move at all.
+        this->declare_parameter<double>("escape_distance_m", 0.0);
+        this->declare_parameter<double>("escape_max_duration_s", 12.0);
+
+        // The watchdog below only arms while a NavigateToPose goal is
+        // executing, which leaves it structurally blind to a robot that is
+        // stationary because nothing is commanding it -- explore_node yielded
+        // to a recovery layer that never took over, a goal was never accepted,
+        // or the frontier queue stalled. Trials in exactly that state report
+        // stuck_count == 0 for their whole duration, so "zero stuck events"
+        // cannot presently be distinguished from "never stopped moving". When
+        // positive, this arms a second detector for that case and publishes to
+        // a separate topic so the two failure modes stay separable in the
+        // metrics. 0.0 (default) disables it entirely.
+        this->declare_parameter<double>("idle_stall_timeout_s", 0.0);
+
+        // Upper bound on how long to wait for Nav2 to stop driving before
+        // the escape publishes anyway. Was a fixed unconditional 400 ms.
+        this->declare_parameter<int>("cancel_settle_max_ms", 400);
+        // false (default) reproduces the original unconditional wait.
+        this->declare_parameter<bool>("cancel_wait_for_confirm", false);
+
         stuck_timeout_   = this->get_parameter("stuck_timeout_s").as_double();
         escape_duration_ = this->get_parameter("escape_duration_s").as_double();
         escape_speed_    = this->get_parameter("escape_speed_m_s").as_double();
@@ -35,6 +85,11 @@ public:
         min_rotation_    = this->get_parameter("min_rotation_rad").as_double();
         spin_target_yaw_ = this->get_parameter("spin_target_yaw_rad").as_double();
         spin_timeout_    = this->get_parameter("spin_timeout_s").as_double();
+        escape_distance_ = this->get_parameter("escape_distance_m").as_double();
+        escape_max_duration_ = this->get_parameter("escape_max_duration_s").as_double();
+        idle_stall_timeout_ = this->get_parameter("idle_stall_timeout_s").as_double();
+        cancel_settle_max_ms_ = static_cast<int>(this->get_parameter("cancel_settle_max_ms").as_int());
+        cancel_wait_for_confirm_ = this->get_parameter("cancel_wait_for_confirm").as_bool();
         std::string odom_topic = this->get_parameter("odom_topic").as_string();
 
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
@@ -66,6 +121,11 @@ public:
         // triggered recovery metrics local_recovery_node already feeds it.
         stuck_event_pub_ = this->create_publisher<std_msgs::msg::Float64>(
             "/stuck_escape/event", 10);
+        // Deliberately a separate topic: an idle stall is not a wedged
+        // robot and must not be silently folded into stuck_count, which is
+        // reported as a navigational-failure metric.
+        idle_stall_pub_ = this->create_publisher<std_msgs::msg::Float64>(
+            "/stuck_escape/idle_stall", 10);
 
         nav_client_ = rclcpp_action::create_client<NavigateToPose>(this, "navigate_to_pose");
         spin_client_ = rclcpp_action::create_client<Spin>(this, "spin");
@@ -99,13 +159,52 @@ private:
         if (is_escaping_) return;
 
         if (!nav_executing_) {
-            // Robot not navigating — reset baseline for next session
+            // No goal in flight. The wedge watchdog below is deliberately not
+            // armed here (there is nothing to cancel and nothing driving the
+            // robot into anything), but this is also the state a mission sits
+            // in when it has stopped making progress for a reason no other
+            // layer reports: explore_node yielded to a recovery that never
+            // arrived, every frontier was gated, or a goal was never accepted.
+            // Detect that separately so it is visible rather than silent.
+            if (idle_stall_timeout_ > 0.0) {
+                if (!idle_start_time_) {
+                    // Anchor the episode at the pose it began from. Comparing
+                    // against the previous tick instead would let a robot
+                    // creeping below min_movement_ per 500 ms tick (0.2 m/s,
+                    // well within normal traverse speed) reset the timer
+                    // forever and never register, while also never
+                    // accumulating displacement worth calling progress.
+                    idle_start_time_ = this->now();
+                    idle_start_x_ = current_x_;
+                    idle_start_y_ = current_y_;
+                } else if (std::hypot(current_x_ - idle_start_x_,
+                                      current_y_ - idle_start_y_) > min_movement_) {
+                    idle_start_time_.reset();
+                    idle_reported_ = false;
+                } else {
+                    double idle_s = (this->now() - *idle_start_time_).seconds();
+                    if (idle_s >= idle_stall_timeout_ && !idle_reported_) {
+                        idle_reported_ = true;
+                        RCLCPP_WARN(this->get_logger(),
+                            "Robot idle at (%.2f, %.2f) for %.1fs with no navigation goal "
+                            "executing. Not a wedge; reporting as idle stall.",
+                            current_x_, current_y_, idle_s);
+                        std_msgs::msg::Float64 m;
+                        m.data = idle_s;
+                        idle_stall_pub_->publish(m);
+                    }
+                }
+            }
             last_moved_x_ = current_x_;
             last_moved_y_ = current_y_;
             last_moved_yaw_ = current_yaw_;
             stuck_start_time_.reset();
             return;
         }
+
+        // A goal is executing again, so any idle episode has ended.
+        idle_start_time_.reset();
+        idle_reported_ = false;
 
         double dx = current_x_ - last_moved_x_;
         double dy = current_y_ - last_moved_y_;
@@ -163,16 +262,53 @@ private:
                 escape_elapsed_ms_ += 50;
 
                 if (escape_phase_ == EscapePhase::DELAY) {
-                    if (escape_elapsed_ms_ >= 400) {
+                    // Nav2's velocity_smoother is remapped cmd_vel_smoothed ->
+                    // cmd_vel, i.e. it publishes on the very topic the escape
+                    // drives on, so beginning to publish while it is still
+                    // ramping down puts two publishers on one topic and the
+                    // escape twist is blended away rather than executed.
+                    // Waiting on the goal-status feed confirms the channel is
+                    // actually free instead of assuming a fixed interval
+                    // suffices -- but it also lets the drive phase start
+                    // earlier than the fixed interval did whenever the cancel
+                    // is confirmed quickly, which is a behavior change, not a
+                    // refinement of an unchanged one. It is therefore opt-in:
+                    // false (default) waits the full cancel_settle_max_ms
+                    // exactly as every trial collected to date did.
+                    bool ready = cancel_wait_for_confirm_
+                        ? (!nav_executing_ || escape_elapsed_ms_ >= cancel_settle_max_ms_)
+                        : (escape_elapsed_ms_ >= cancel_settle_max_ms_);
+                    if (ready) {
+                        if (cancel_wait_for_confirm_ && nav_executing_) {
+                            RCLCPP_WARN(this->get_logger(),
+                                "Nav2 still reports a goal executing %dms after cancel; "
+                                "starting escape anyway.", cancel_settle_max_ms_);
+                        }
                         escape_phase_ = EscapePhase::DRIVING;
                         escape_elapsed_ms_ = 0;
+                        drive_start_x_ = current_x_;
+                        drive_start_y_ = current_y_;
                         RCLCPP_INFO(this->get_logger(), "Escape: driving backward.");
                     }
                     return;
                 }
 
                 if (escape_phase_ == EscapePhase::DRIVING) {
-                    if (escape_elapsed_ms_ < static_cast<int>(escape_duration_ * 1000.0)) {
+                    bool done;
+                    if (escape_distance_ > 0.0) {
+                        double moved = std::hypot(current_x_ - drive_start_x_,
+                                                  current_y_ - drive_start_y_);
+                        done = (moved >= escape_distance_) ||
+                               (escape_elapsed_ms_ >= static_cast<int>(escape_max_duration_ * 1000.0));
+                        if (done && moved < escape_distance_) {
+                            RCLCPP_WARN(this->get_logger(),
+                                "Escape timed out after %.1fs having moved only %.2fm of %.2fm target; "
+                                "robot may be hard-wedged.", escape_max_duration_, moved, escape_distance_);
+                        }
+                    } else {
+                        done = escape_elapsed_ms_ >= static_cast<int>(escape_duration_ * 1000.0);
+                    }
+                    if (!done) {
                         geometry_msgs::msg::Twist twist;
                         twist.linear.x = -escape_speed_;
                         cmd_vel_pub_->publish(twist);
@@ -278,6 +414,11 @@ private:
     double min_rotation_;
     double spin_target_yaw_;
     double spin_timeout_;
+    double escape_distance_;
+    double escape_max_duration_;
+    double idle_stall_timeout_;
+    int cancel_settle_max_ms_;
+    bool cancel_wait_for_confirm_{false};
 
     // State
     double current_x_{0.0}, current_y_{0.0}, current_yaw_{0.0};
@@ -287,6 +428,10 @@ private:
     int escape_elapsed_ms_{0};
     EscapePhase escape_phase_{EscapePhase::DELAY};
     std::optional<rclcpp::Time> stuck_start_time_;
+    std::optional<rclcpp::Time> idle_start_time_;
+    double idle_start_x_{0.0}, idle_start_y_{0.0};
+    bool idle_reported_{false};
+    double drive_start_x_{0.0}, drive_start_y_{0.0};
     rclcpp::Time escape_began_time_;
     bool spin_result_received_{false};
     GoalHandleSpin::SharedPtr spin_goal_handle_;
@@ -297,6 +442,7 @@ private:
     rclcpp::Subscription<action_msgs::msg::GoalStatusArray>::SharedPtr nav_status_sub_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr stuck_event_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr idle_stall_pub_;
     rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
     rclcpp_action::Client<Spin>::SharedPtr spin_client_;
     rclcpp::TimerBase::SharedPtr monitor_timer_;

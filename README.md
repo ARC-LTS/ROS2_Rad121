@@ -1,180 +1,221 @@
-# Radiation Monitoring and Exploration System (RaMonES)
+# ROS2_Rad121 — RaMonES Radiation Monitoring and Exploration System
 
-This repository contains a ROS 2 based system for autonomous robot exploration in radiation-contaminated environments. The system integrates radiation sensing, spatial modeling using Gaussian Process (GP) regression, and radiation-aware navigation and exploration.
+A ROS 2 Humble, closed-loop system for autonomous robot exploration of
+radiation-contaminated environments. A mobile robot explores an unknown area while
+a Gaussian-Process (GP) radiation field map is built in real time, sources are
+localized, and the live predicted field is fed back into navigation as a cost — so
+the robot maps the space while actively minimizing dose.
 
-## 🚀 Overview
-
-RaMonES is a modular, comprehensive radiation monitoring system that enables any mobile robot (e.g., Clearpath Husky, Boston Dynamics Spot) to autonomously map an unknown area while minimizing their radiation dose. It uses a combination of Frontier Exploration and a custom Radiation Costmap Layer to guide the robot through safe paths and avoid high-intensity radiation zones.
-
-## 📂 Project Structure
-
-| Package | Description |
-| --- | --- |
-| `rad_simulation` | Simulates radiation sources (point sources and spatial background) and sensor readings, published to the `\rad` topic. |
-| `ros2_rad_map` | Generates radiation heatmaps using Gaussian Process (GP) regression for smooth spatial modeling. |
-| `rad_costmap_plugin` | A Nav2 costmap layer that translates radiation intensity into navigation costs. |
-| `rad_launch` | Centralized launch files for the entire simulation and analysis stack. |
-| `rad_nav_behavior` | Zone explorer node with exploration and surveillance modes, orbital survey, and a YAML-driven zone publisher. |
-| `rad_local_recovery` | Acute recovery behaviours: detects high-dose events, stops frontier navigation, navigates the robot to a safe zone, and resumes exploration once clear. |
-| `rad_safety` | Monitoring nodes for cumulative radiation dose and robot safety. |
-| `rad121_monitor` | Drivers and monitors for the RAD121 radiation sensor that we used for this project. Not needed if you intend on using another sensor instead. |
-
-## ✨ Key Features
-
-### 1. Radiation Simulation
-*   **Spatial Background Field:** Implements a spatially-fixed, randomized background radiation field (0.05 - 1.0 mrem/hr) to replace high-noise temporal fluctuations.
-*   **Point Source Modeling:** Accurately simulates multiple radiation sources with a point source (e.g. $1/r^2$) intensity decay.
-
-### 2. Gaussian Process (GP) Heatmapping
-*   **Smooth Interpolation:** Uses GP regression to predict radiation levels in unvisited areas, filling gaps in the sensor data.
-*   **Uncertainty-Aware Masking:** Dynamically masks the radiation field based on model confidence, allowing the robot to "trust" the model in reachable free space.
-
-### 3. Autoregressive Gaussian Process (ARGP) System
-The system features an **Autoregressive Gaussian Process (ARGP)** node that manages multi-fidelity spatial modeling:
-*   **Linear Autoregressive Fusion:** Implements an autoregressive formulation where high-fidelity predictions are modeled as a scaled version of the low-fidelity prior plus a residual Gaussian Process: $f_h(x) = \rho \cdot f_l(x) + \delta(x)$.
-*   **Dynamic Scaling ($\rho$):** The node learns the optimal scaling factor ($\rho$) in real-time to align the low-fidelity prior with high-fidelity sensor observations.
-*   **Sparse GP Transition:** Automatically switches from standard GP to Sparse GP (Inducing Points) when the sample count exceeds a threshold (default 300), maintaining $O(NM^2)$ complexity for real-time performance.
-*   **Landmark Preservation:** Uses a specialized spatial buffer to protect high-intensity "landmarks" (spikes) from being smoothed out by downsampling or GP averaging.
-*   **Active Peak Finding:** Provides a service to find radiation "hotspots" by performing non-linear optimization (L-BFGS-B) on the ARGP mean surface.
-
-### 4. Radiation-Aware Costmap
-*   **Bilinear Interpolation:** Smoothly maps the radiation heatmap onto the Nav2 costmap, avoiding "voxelized" navigation paths.
-*   **Performance Optimized:** Uses localized update bounds (10m radius around the robot) to maintain a high control rate (10-20 Hz) without CPU bottlenecks.
-
-### 5. Autonomous Exploration
-*   **Frontier-Based Navigation:** Automatically identifies and explores unknown regions.
-*   **Loop-Closure Stability:** Features a proximity-based goal validation system to prevent "target switching" loops as SLAM clears the robot's immediate path.
-*   **Dose-Aware Planning:** Prioritizes lower-radiation paths and blacklists "lethal" radiation zones.
-
-### 6. Zone Explorer & Orbital Survey (`rad_nav_behavior`)
-
-The `zone_explorer_node` provides two distinct operating modes and can be switched at runtime via service calls.
-
-#### Exploration Mode
-The robot uses frontier navigation to map the environment. When the GP pipeline identifies a radiation source and publishes it to `/radiation_zones`, the zone explorer pauses frontier navigation, navigates to the source location, performs a configurable orbital survey around it (facing inward at each waypoint), then resumes frontier exploration when the queue is empty.
-
-#### Surveillance Mode
-The robot patrols a set of known source locations loaded from a YAML file. A companion `zone_publisher_node` reads the file and continuously publishes the locations as a `RadZoneArray` on `/radiation_zones`. The zone explorer subscribes to the same topic and orbits each source **without navigating to the hotspot center**, relying on the radiation costmap layer to route between waypoints safely.
-
-The YAML format for known sources (`rad_nav_behavior/params/known_sources.yaml`):
-```yaml
-zones:
-  - label: "Source_A"
-    x: -4.17
-    y: -12.87
-  - label: "Source_B"
-    x: -10.93
-    y: -15.54
-```
-
-## 🛠️ Installation
-
-1.  **Install vcstool** if not already present:
-    ```bash
-    sudo apt install python3-vcstool
-    ```
-
-2.  **Clone the repository** into your ROS 2 workspace:
-    ```bash
-    mkdir -p ~/ros_ws/src && cd ~/ros_ws/src
-    git clone https://github.com/ARC-LTS/ROS2_Rad121.git
-    ```
-
-3.  **Pull required source dependencies** (including `explore-ros2`):
-    ```bash
-    vcs import --input ROS2_Rad121/radmon.repos
-    ```
-    This clones all declared source dependencies (e.g. `explore-ros2`) into the workspace alongside `ROS2_Rad121`.
-
-4.  **Install ROS dependencies**:
-    ```bash
-    cd ~/ros_ws
-    rosdep install --from-paths src --ignore-src -r -y
-    ```
-
-5.  **Build and source the workspace**:
-    ```bash
-    colcon build
-    source ~/ros_ws/install/setup.bash
-    ```
-
-## 🏃 Usage
-
-### Running the Full Simulation
-To launch the complete Gazebo simulation with SLAM, Nav2, and the Radiation Stack:
-```bash
-ros2 launch rad_launch rad_launch_sim_launch.py
-```
-This launch script handles the sequential startup of Gazebo, SLAM, Navigation, and the Radiation Analysis nodes with appropriate delays.
-
-#### Enabling Orbital Surveys
-To additionally launch the zone explorer in exploration mode (pauses/resumes frontier nav around each orbital survey):
-```bash
-ros2 launch rad_launch rad_launch_sim_launch.py orbit_surveys:=true
-```
-
-### Launching the Zone Explorer Standalone
-
-**Exploration mode** (frontier navigation + orbital survey of discovered zones):
-```bash
-ros2 launch rad_nav_behavior zone_explorer.launch.py mode:=exploration
-```
-
-**Surveillance mode** (patrol known source locations from a YAML file):
-```bash
-ros2 launch rad_nav_behavior zone_explorer.launch.py \
-  mode:=surveillance \
-  zones_file:=/path/to/your/sources.yaml
-```
-The `zone_publisher_node` is launched automatically alongside the zone explorer in surveillance mode.
-
-### Manual Source Placement
-You can manually place radiation sources in the environment using RViz2:
-```bash
-ros2 run rad_simulation source_selector_node
-```
-Use the **"Publish Point"** tool in RViz to click on the map and spawn sources in real-time.
-
-## 🎛️ Runtime Service Calls
-
-While the zone explorer node is running, its behavior can be changed at runtime without restarting.
-
-### Switch Operating Mode
-```bash
-# Switch to exploration mode (starts frontier navigation)
-ros2 service call /zone_explorer_node/exploration_mode std_srvs/srv/Trigger "{}"
-
-# Switch to surveillance mode (stops frontier navigation)
-ros2 service call /zone_explorer_node/surveillance_mode std_srvs/srv/Trigger "{}"
-```
-Any survey already in progress completes before the new mode's behavior takes effect.
-
-### Trigger an Orbital Survey On Demand
-Queue an orbital survey of any map-frame position immediately, regardless of the current mode:
-```bash
-ros2 service call /zone_explorer_node/orbit_zone ros2_rad_map/srv/OrbitZone \
-  "{label: 'Source_A', x: -4.17, y: -12.87}"
-```
-The `label` field is optional — if omitted, a timestamped name is generated automatically. The requested zone is placed at the front of the queue and surveyed next.
-
-## 📝 Configuration
-
-Key parameters (thresholds, scales, topics) can be found in the following locations:
-*   **Radiation Source Config:** `rad_simulation/params/sensor_simulator.yaml`
-*   **Heatmap/GP Params:** `ros2_rad_map/params/heatmap.yaml`
-*   **Exploration Config:** `src/explore-ros2/explore/config/params.yaml`
-*   **Known Sources (Surveillance):** `rad_nav_behavior/params/known_sources.yaml`
-*   **Zone Explorer Params:** configured inline in `rad_nav_behavior/launch/zone_explorer.launch.py`
-
-| Parameter | Default | Description |
-| --- | --- | --- |
-| `mode` | `exploration` | Starting mode: `exploration` or `surveillance` |
-| `survey_radius_m` | `1.5` | Orbit radius around each source (metres) |
-| `survey_waypoints` | `6` | Number of equally-spaced orbit points |
-| `dwell_per_waypoint_s` | `2` | Seconds to pause at each orbit waypoint |
-| `zones_topic` | `/radiation_zones` | Topic to receive `RadZoneArray` zone updates |
-| `explore_start_service` | `explore_node/start` | Service to resume frontier exploration |
-| `explore_stop_service` | `explore_node/stop` | Service to pause frontier exploration |
+This README is the architecture map for the whole stack. Each package has its own
+README with node-, topic-, parameter-, and launch-level detail; links are below.
 
 ---
-*Made with <3 by Brendon (Doobs) in Miami, FL*
+
+## The two arms
+
+Every trial runs in one of two arms, selected by a single launch argument on
+`rad_launch_sim_launch.py`:
+
+| Arm | `radiation_agnostic` | Radiation costmap layer | Frontier radiation costing | Local Recovery Node | Hard safety brake |
+| --- | --- | --- | --- | --- | --- |
+| **RaMonES** | `false` (default) | loaded | active (avoid + optional seek) | active | active |
+| **Baseline** | `true` | omitted from Nav2 config | weights zeroed | disabled (thresholds set to 1e6 at construction) | **active** |
+
+The hard safety brake (`rad_safety_monitor_node`) is deliberately held active in
+**both** arms — it is a physical overexposure backstop, not a navigation strategy.
+A separate, exploratory-only `safety_agnostic:=true` flag can disable even that for
+an unsafe-baseline ablation.
+
+### Layered safety / recovery thresholds
+Three dose-rate levels, enforced by different components:
+
+- **~10 mrem/hr — acute.** Shared by the frontier hard-exclusion (in `explore_node`) and `local_recovery_node`'s escape trigger (`acute_dose_rate_mrem_hr = 10.0`). This is where the proactive escape search fires.
+- **~12 mrem/hr — emergency brake.** `rad_safety_monitor_node`'s `emergency_threshold_mrem_hr` (YAML value), intentionally *above* the acute level so it only engages as a true last resort, after yielding to `local_recovery_node` for a patience window.
+- **~2 mrem/hr — scoring only.** Used by `rad_evaluator_node` to score dose violations and max penetration; it does **not** drive robot behaviour.
+
+Two physically-distinct recovery mechanisms live in `rad_local_recovery`:
+- `local_recovery_node` — **dose-triggered** escape search on a costmap/heatmap-scored polar grid.
+- `stuck_escape_node` — **geometry watchdog** for a wedged robot (no displacement for a stuck timeout); cancels the goal and backs out. The `escape_distance_m` argument is the subject of a documented fix: `0.0` keeps the legacy time-based ~0.25 m escape, a positive value gives a distance-based escape that clears the Nav2 inflation band.
+
+---
+
+## Packages
+
+| Package | Role | README |
+| --- | --- | --- |
+| `rad_simulation` | Simulated radiation field + sensor (stand-in for hardware) | — (brief below) |
+| `rad121_monitor` | Real RAD121 Geiger-counter driver | [README](rad121_monitor/README.md) |
+| `ros2_rad_map` | GP radiation mapping, hotspot finding, visualizers, custom msgs/srvs | — (brief below) |
+| `rad_costmap_plugin` | Nav2 costmap layer injecting the predicted field as nav cost | [README](rad_costmap_plugin/README.md) |
+| `rad_nav_behavior` | Zone explorer (exploration/surveillance) + orbital survey | [README](rad_nav_behavior/README.md) |
+| `rad_local_recovery` | Dose-triggered escape + geometry stuck-recovery | [README](rad_local_recovery/README.md) |
+| `rad_safety` | Hard dose backstop / emergency brake | [README](rad_safety/README.md) |
+| `rad_evaluation` | Per-trial metrics + the dose-budget authority | — (brief below) |
+| `rad_launch` | Top-level launch orchestration + system reset | [README](rad_launch/README.md) |
+
+### The three packages without a dedicated README (covered here)
+
+**`rad_simulation`** — the simulated sensing layer that stands in for `rad121_monitor`
+during trials. `rad_field_server` holds the ground-truth field (point sources with
+~1/r² decay plus a fixed randomized spatial background), exposes services to spawn,
+clear, and save sources (`SpawnSource`, `SpawnRandomSources`, `AddSource`,
+`SetFloat64`, plus `std_srvs` toggles), and publishes source markers / source data /
+background level under `~/`. `rad_sensor_simulator` samples that field at the robot's
+TF pose and publishes the reading on **`/rad`** (`std_msgs/Float64MultiArray`,
+`[compensated_cpm, mrem_hr]`) — the exact topic and format `rad121_monitor` produces,
+so the rest of the stack is identical in sim and on hardware. `source_selector_node`
+lets you place sources interactively from RViz's "Publish Point". Params in
+`params/sensor_simulator.yaml` and the `*_saved_sources.yaml` world presets.
+
+**`ros2_rad_map`** — the mapping and source-localization brain, and the package that
+defines the shared custom interfaces (`GPPredict`, `FindPeaks`, `GetHeatmaps`,
+`SaveMaps`, `OrbitZone`, `GoToZone` services; `RadZone`, `RadZoneArray` messages).
+`gp_predictor_node.py` (GPy, CPU) consumes `/rad` + robot pose and serves the
+multi-fidelity Autoregressive GP (`argp`) or single-fidelity prediction via the
+`predict_gp` service, plus hotspot optimization via `find_rad_peaks`.
+`rad_heatmap_node` calls `predict_gp` on a timer and publishes the field images —
+notably **`/rad_heatmap/gp_mean_map`** and **`/rad_heatmap/raw_mean_map`**
+(`sensor_msgs/Image`, `32FC1`), plus std-dev/overlay maps — and offers
+`reset_rad_heatmap` / `save_rad_maps`. `peak_finder_client_node` turns GP peaks into
+**`/radiation_zones`** (`RadZoneArray`) and `/confirmed_rad_sources`. The rest
+(`gp_visualizer_node`, `rad_costmap_visualizer_node`, `rad_pointcloud_node`,
+`rad_mapper_node`, `rad_zone_planner_node`) are visualization/auxiliary nodes. The
+trained low-fidelity prior lives in `models/gp_model.pkl`.
+
+**`rad_evaluation`** — the scoring and dose-budget layer. `rad_evaluator_node`
+subscribes to `/rad`, `/map`, the ground-truth source markers
+(`/rad_field_server/sources`), the detected peaks (`/radiation_zones`), and
+`/stuck_escape/event`; it integrates cumulative dose (the campaign's reported ground
+truth) and is the **dose-budget authority**, publishing
+**`/dose_budget/remaining_fraction`** (`std_msgs/Float64`) that `explore_node`,
+`local_recovery_node`, and `rad_safety_monitor_node` all consume so their effective
+thresholds scale by one shared multiplier. It also subscribes to each of those
+layers' `~/dose_budget_multiplier` for a per-trial contract-coherence check. Ships a
+`rosbag`-recording launch and `rosbag_stopper.py` for batch trials.
+
+> Note: frontier exploration itself is provided by **`explore_lite`**, a
+> radiation-aware fork pulled in via `radmon.repos` (not in this repo). It owns the
+> `/explore_node/start|stop|reset` services and the radiation-informed frontier
+> costing that the arm selector and the frontier-costing launch args configure.
+
+---
+
+## Data flow (sensing → mapping → localization → exploration → recovery)
+
+```
+                    radiation reading  /rad  [cpm, mrem/hr]
+ rad_sensor_simulator ─────────────────┬───────────────────────────────┐
+ (or rad121_monitor)                   │                               │
+                                       ▼                               ▼
+                              gp_predictor_node  ──predict_gp──▶  rad_heatmap_node
+                              (GP / ARGP map)     (service)       publishes field images:
+                                       │                          /rad_heatmap/gp_mean_map
+                                       │ find_rad_peaks            /rad_heatmap/raw_mean_map
+                                       ▼                                   │
+                              peak_finder_client_node                      │
+                              publishes /radiation_zones                   │
+                                       │                                   │
+         ┌─────────────────────────────┤                                   │
+         ▼                             ▼                                   ▼
+ zone_explorer_node            explore_lite (explore_node)        rad_costmap_plugin
+ (orbital survey of zones)     frontier exploration,             RadiationLayer reads
+                               radiation-informed costing        /rad_heatmap/raw_mean_map
+                                       │                          → Nav2 global costmap cost
+                                       ▼                                   │
+                                 Nav2 navigate_to_pose ◀────────────────────┘
+                                       ▲        ▲
+                 escape goals          │        │  retreat goals / geometry backup
+   local_recovery_node ────────────────┘        └──── rad_safety_monitor_node
+   (dose-triggered, reads /rad,                        (emergency brake, reads /rad)
+    costmap, gp_mean_map)              stuck_escape_node (odometry watchdog → /cmd_vel + spin)
+
+ rad_evaluator_node integrates /rad → /dose_budget/remaining_fraction ──▶ (explore_node,
+                                                      local_recovery_node, rad_safety_monitor_node)
+```
+
+1. **Sense.** `rad_sensor_simulator` (sim) or `rad121_monitor` (hardware) publishes dose on `/rad`.
+2. **Map.** `gp_predictor_node` fits a (multi-fidelity) GP; `rad_heatmap_node` turns predictions into field images.
+3. **Localize sources.** `peak_finder_client_node` optimizes the GP mean into hotspots on `/radiation_zones`.
+4. **Explore.** `explore_lite` drives frontier exploration with radiation-informed costing; `rad_costmap_plugin` bakes the predicted field into the Nav2 global costmap; `zone_explorer_node` optionally orbits discovered sources.
+5. **Recover.** `local_recovery_node` (dose) and `stuck_escape_node` (geometry) handle escapes; `rad_safety_monitor_node` is the hard brake. All three dose layers share the budget multiplier from `rad_evaluator_node`.
+
+---
+
+## Key tunables
+
+Set on `ros2 launch rad_launch rad_launch_sim_launch.py`:
+
+| Argument | Default | What it controls |
+| --- | --- | --- |
+| `radiation_agnostic` | `false` | **Arm selector** (RaMonES vs Baseline). |
+| `world` | `warehouse_barricaded` | Gazebo world. |
+| `headless` | `false` | Server-only Gazebo for batch runs. |
+| `gp_mode` | `argp` | GP fidelity: `argp` (trained prior) or `single_fidelity` (flat prior). |
+| `known_field_mode` | `false` | Oracle field (analytic true field instead of GP) — diagnostic ablation. |
+| `escape_distance_m` | `0.0` | Stuck-escape fix: `0` = legacy ~0.25 m time-based; `>0` = distance-based, clears inflation band. |
+| `dose_relaxation_k` | `0.0` | Budget-aware threshold relaxation shared across the three dose layers. |
+| `frontier_spend_fraction` | `0.05` | Dose-budget fraction one frontier round-trip may spend. |
+| `radiation_seek_scale` / `radiation_seek_adaptive` | `0.0` / `false` | Attraction toward elevated-but-unconfirmed regions. |
+| `blacklist_ttl_s` | `0.0` | Frontier-blacklist expiry (`0` = permanent). |
+| `max_recovery_episodes` | `0` | Cap on dose-triggered recovery episodes (`0` = unbounded). |
+| `safety_agnostic` | `false` | Ablation: disable even the hard brake. |
+| `orbit_surveys` | `false` | Launch the zone explorer to orbit discovered sources. |
+| `record_ground_truth` | `false` | Bridge true robot pose to `/ground_truth/tf` (H3 metric). |
+
+See the [`rad_launch` README](rad_launch/README.md) for the full argument list and
+every secondary launch file.
+
+Per-component thresholds live in each package's params: dose thresholds in
+`rad_local_recovery/params/local_recovery.yaml` and `rad_safety/params/rad_safety.yaml`;
+costmap cost ramp in the Nav2 config that wires `rad_costmap_plugin::RadiationLayer`;
+GP/heatmap settings in `ros2_rad_map/params/heatmap.yaml`; field/source presets in
+`rad_simulation/params/*.yaml`.
+
+---
+
+## Build
+
+Workspace layout is a standard ROS 2 overlay. This repo clones into
+`<ws>/src/ROS2_Rad121`, and `radmon.repos` pulls source-only dependencies (notably
+the radiation-aware `explore-ros2`/`explore_lite` fork) alongside it.
+
+```bash
+# 1. tooling
+sudo apt install python3-vcstool
+
+# 2. clone into the workspace
+mkdir -p ~/ros_ws/src && cd ~/ros_ws/src
+git clone <this-repo-url> ROS2_Rad121
+
+# 3. pull source dependencies declared in radmon.repos
+vcs import --input ROS2_Rad121/radmon.repos
+
+# 4. system/ROS dependencies
+cd ~/ros_ws
+rosdep install --from-paths src --ignore-src -r -y
+# note: rad121_monitor needs libftdi1 (not in rosdep):  sudo apt install libftdi1-dev
+
+# 5. build and source
+colcon build
+source install/setup.bash
+
+# build just one package while iterating, e.g.:
+colcon build --packages-select rad_local_recovery
+```
+
+The Gazebo/SLAM/Nav2 bring-up launches (`clearpath_gz`, `clearpath_nav2_demos`,
+`spot_robot`) are external robot-support packages the launch files include; they
+must be present in the overlay or underlay for `rad_launch_sim_launch.py` to run.
+
+## Run a trial
+```bash
+# RaMonES arm, default world
+ros2 launch rad_launch rad_launch_sim_launch.py
+
+# Baseline arm, headless, rectangle world, with the stuck-escape fix on
+ros2 launch rad_launch rad_launch_sim_launch.py \
+  radiation_agnostic:=true headless:=true world:=rectangle escape_distance_m:=0.8
+```
+
+## License
+ISC (see `LICENSE`). Maintainer: Brendon Cintas.
