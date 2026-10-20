@@ -23,6 +23,19 @@ def launch_setup(context, *args, **kwargs):
     else:
         model_file_path = os.path.join(ros2_rad_map_share, 'models', 'gp_model.pkl')
 
+    # Optional BLAS/OpenMP thread cap for the GP fit. numpy/scipy (and so GPy)
+    # otherwise spread each fit across every core in bursts, which on smaller
+    # hosts starves rtabmap's ICP odometry and corrupts SLAM. Set
+    # RAMONES_GP_THREADS=<n> to cap only this node; unset leaves it unchanged.
+    gp_threads = os.environ.get('RAMONES_GP_THREADS', '').strip()
+    additional_env = {}
+    if gp_threads:
+        additional_env = {
+            'OMP_NUM_THREADS': gp_threads,
+            'OPENBLAS_NUM_THREADS': gp_threads,
+            'MKL_NUM_THREADS': gp_threads,
+        }
+
     gp_prediction_server_node = Node(
         package='ros2_rad_map',
         executable='gp_predictor_node.py',
@@ -31,7 +44,8 @@ def launch_setup(context, *args, **kwargs):
         # param_file first: heatmap.yaml's own 'model_path: ""' placeholder must be
         # overridden by the resolved path below, and ROS2 applies later entries
         # in this list on top of earlier ones for overlapping keys.
-        parameters=[param_file, {'model_path': model_file_path}]
+        parameters=[param_file, {'model_path': model_file_path}],
+        additional_env=additional_env,
     )
 
     return [gp_prediction_server_node]

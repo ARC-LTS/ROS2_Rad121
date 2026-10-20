@@ -4,7 +4,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -21,6 +21,18 @@ def generate_launch_description():
                     'and circles each discovered source before resuming exploration.',
     )
     orbit_surveys = LaunchConfiguration('orbit_surveys')
+
+    setup_path_arg = DeclareLaunchArgument(
+        'setup_path',
+        default_value=EnvironmentVariable(
+            'RAMONES_SETUP_PATH', default_value=os.path.expanduser('~/clearpath/')),
+        description='Clearpath robot setup directory (robot.yaml plus the generated '
+                    'platform/sensors/manipulators launch and config files). Must end '
+                    'in "/". Defaults to $RAMONES_SETUP_PATH, else ~/clearpath/. Passed '
+                    'explicitly to the Gazebo, SLAM and Nav2 launches so they all use '
+                    'the same robot configuration.',
+    )
+    setup_path = LaunchConfiguration('setup_path')
 
     headless_arg = DeclareLaunchArgument(
         'headless',
@@ -193,6 +205,7 @@ def generate_launch_description():
         launch_arguments=[
             ('headless', LaunchConfiguration('headless')),
             ('world', LaunchConfiguration('world')),
+            ('setup_path', setup_path),
         ]
     )
 
@@ -213,7 +226,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(nav_share, 'launch', 'slam.launch.py')
             ),
-            launch_arguments={'output': 'log'}.items()
+            launch_arguments={'output': 'log', 'setup_path': setup_path}.items()
         )]
     )
 
@@ -223,7 +236,8 @@ def generate_launch_description():
         actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(nav_share, 'launch', 'nav2.launch.py')
-            )
+            ),
+            launch_arguments={'setup_path': setup_path}.items()
         )]
     )
 
@@ -436,6 +450,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        setup_path_arg,
         orbit_surveys_arg,
         headless_arg,
         world_arg,

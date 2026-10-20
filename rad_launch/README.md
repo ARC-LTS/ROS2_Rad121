@@ -49,6 +49,7 @@ only when `record_ground_truth:=true`, bridging `/model/robot/pose` → `/ground
 **Arguments** (all with their defaults):
 | Argument | Default | Description |
 | --- | --- | --- |
+| `setup_path` | `$RAMONES_SETUP_PATH`, else `~/clearpath/` | Clearpath robot setup directory (must end in `/`). Passed explicitly to the `clearpath_gz` simulation, SLAM and Nav2 launches so all three use the same robot configuration. For the campaign this must be the frozen config (EKF off, VLP-16 at 10 Hz) shipped by `ramones_ws`; regenerating it with newer Clearpath packages turns the EKF on and degrades SLAM. |
 | `orbit_surveys` | `false` | Launch `zone_explorer_node` + `zone_publisher_node` so discovered zones get an orbital survey. |
 | `headless` | `false` | Gazebo server-only (no GUI) for batch/headless trials. |
 | `world` | `warehouse_barricaded` | Gazebo world (e.g. `rectangle`, `warehouse_barricaded`); passed to `clearpath_gz`. |
@@ -91,6 +92,11 @@ resolves the model pickle based on `gp_mode`.
 | Argument | Default | Description |
 | --- | --- | --- |
 | `gp_mode` | `argp` | `argp` loads `models/gp_model.pkl`; `single_fidelity` passes an empty `model_path` (flat background prior). |
+
+Environment: if `RAMONES_GP_THREADS=<n>` is set, the node runs with
+`OMP_NUM_THREADS`/`OPENBLAS_NUM_THREADS`/`MKL_NUM_THREADS=<n>`. Unset, nothing
+changes. Capping it (e.g. `2`) stops the GP fit's BLAS threads from starving
+rtabmap's ICP odometry on hosts with few cores.
 
 ### `rad_heatmap_launch.py` — heatmap generator
 Launches `ros2_rad_map/rad_heatmap_node` with `heatmap.yaml`.
@@ -180,11 +186,14 @@ directory (`heatmap.yaml`, `sensor_simulator.yaml`, `local_recovery.yaml`,
 ## Dependencies
 From `package.xml`: `launch`, `launch_ros`, `ament_index_python`, `rclpy`,
 `std_srvs`, `nav2_msgs`, `rad121_monitor`, `ros2_rad_map`, `rad_simulation`,
-`rad_local_recovery`, `explore_lite`, `spot_robot`. Build type `ament_python`.
-`explore_lite`, `spot_robot`, `clearpath_gz`, and `clearpath_nav2_demos` are
-external packages the launches include; `explore_lite` (the radiation-aware fork)
-comes in via `radmon.repos`. (`package.xml` `description`/`license` are still `TODO`
-placeholders — harmless for build.)
+`rad_local_recovery`, `explore_lite`, plus exec deps `rad_safety`,
+`rad_nav_behavior`, `clearpath_gz`, `clearpath_nav2_demos`, `ros_gz_bridge`.
+Build type `ament_python`. `explore_lite` (the radiation-aware fork),
+`clearpath_gz` (`gazebo_sim`) and `clearpath_nav2_demos` (`navigation`) come from
+the sibling repositories pinned by
+[`ramones_ws`](https://github.com/ARC-LTS/ramones_ws). `rad_spot_launch.py` also
+needs `spot_robot` (Spot hardware bringup); that dependency is deliberately not
+declared, so the simulation stack builds and resolves without the Spot stack.
 
 ## Build & run
 ```bash
