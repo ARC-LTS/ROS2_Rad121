@@ -94,7 +94,7 @@ layers' `~/dose_budget_multiplier` for a per-trial contract-coherence check. Shi
 `rosbag`-recording launch and `rosbag_stopper.py` for batch trials.
 
 > Note: frontier exploration itself is provided by **`explore_lite`**, a
-> radiation-aware fork pulled in via `radmon.repos` (not in this repo). It owns the
+> radiation-aware fork (`explore-ros2`, pinned by `ramones_ws`; not in this repo). It owns the
 > `/explore_node/start|stop|reset` services and the radiation-informed frontier
 > costing that the arm selector and the frontier-costing launch args configure.
 
@@ -150,6 +150,7 @@ Set on `ros2 launch rad_launch rad_launch_sim_launch.py`:
 | `radiation_agnostic` | `false` | **Arm selector** (RaMonES vs Baseline). |
 | `world` | `warehouse_barricaded` | Gazebo world. |
 | `headless` | `false` | Server-only Gazebo for batch runs. |
+| `setup_path` | `$RAMONES_SETUP_PATH` / `~/clearpath/` | Clearpath robot setup directory shared by Gazebo, SLAM and Nav2 (see Build). |
 | `gp_mode` | `argp` | GP fidelity: `argp` (trained prior) or `single_fidelity` (flat prior). |
 | `known_field_mode` | `false` | Oracle field (analytic true field instead of GP) — diagnostic ablation. |
 | `escape_distance_m` | `0.0` | Stuck-escape fix: `0` = legacy ~0.25 m time-based; `>0` = distance-based, clears inflation band. |
@@ -175,41 +176,57 @@ GP/heatmap settings in `ros2_rad_map/params/heatmap.yaml`; field/source presets 
 
 ## Build
 
-Workspace layout is a standard ROS 2 overlay. This repo clones into
-`<ws>/src/ROS2_Rad121`, and `radmon.repos` pulls source-only dependencies (notably
-the radiation-aware `explore-ros2`/`explore_lite` fork) alongside it.
+**Use the meta-repo.** [`ARC-LTS/ramones_ws`](https://github.com/ARC-LTS/ramones_ws)
+pins every component (this repo, `explore-ros2`, `navigation`, `gazebo_sim`, the
+Clearpath platform packages), ships the frozen Clearpath robot configuration the
+campaign ran on, and bootstraps the workspace with one script:
 
 ```bash
-# 1. tooling
-sudo apt install python3-vcstool
-
-# 2. clone into the workspace
-mkdir -p ~/ros_ws/src && cd ~/ros_ws/src
-git clone <this-repo-url> ROS2_Rad121
-
-# 3. pull source dependencies declared in radmon.repos
-vcs import --input ROS2_Rad121/radmon.repos
-
-# 4. system/ROS dependencies
-cd ~/ros_ws
-rosdep install --from-paths src --ignore-src -r -y
-# note: rad121_monitor needs libftdi1 (not in rosdep):  sudo apt install libftdi1-dev
-
-# 5. build and source
-colcon build
+git clone https://github.com/ARC-LTS/ramones_ws.git
+cd ramones_ws && ./setup.sh
 source install/setup.bash
-
-# build just one package while iterating, e.g.:
-colcon build --packages-select rad_local_recovery
 ```
 
-The Gazebo/SLAM/Nav2 bring-up launches (`clearpath_gz`, `clearpath_nav2_demos`,
-`spot_robot`) are external robot-support packages the launch files include; they
-must be present in the overlay or underlay for `rad_launch_sim_launch.py` to run.
+Developing on this repo alone? `radmon.repos` pulls the sibling repositories on
+their `maintenance` branches. (Their `main` branches predate the campaign launch
+arguments and won't work with this branch.)
+
+```bash
+sudo apt install python3-vcstool
+mkdir -p ~/ros_ws/src && cd ~/ros_ws/src
+git clone -b maintenance https://github.com/ARC-LTS/ROS2_Rad121.git
+vcs import --input ROS2_Rad121/radmon.repos
+cd ~/ros_ws
+rosdep install --from-paths src --ignore-src -r -y
+pip3 install GPy            # gp_predictor_node; GPy has no rosdep rule
+colcon build --symlink-install
+source install/setup.bash
+```
+
+Don't overlay another `clearpath_simulator` checkout (for example an older
+`~/clearpath_ws`) on top of this workspace. A 0.2.x `clearpath_generator_gz` is
+incompatible with the Humble 1.3.x `clearpath_generator_common` and crashes
+robot bring-up.
+
+### Robot configuration (`setup_path`)
+
+The Gazebo, SLAM and Nav2 launches all read a Clearpath setup directory
+(`robot.yaml` plus generated `platform/`, `sensors/`, `manipulators/` files).
+`rad_launch_sim_launch.py` takes it from the `setup_path` argument, defaulting to
+`$RAMONES_SETUP_PATH` and then `~/clearpath/`, and passes it to all three.
+`gazebo_sim` does not regenerate these files (`generate:=false`), so the directory
+must already contain them. The campaign used a frozen configuration with the
+**EKF disabled** and the **VLP-16 at 10 Hz**. `ramones_ws` ships it. Regenerating
+it with current Clearpath packages turns the EKF on and raises the lidar to 50 Hz,
+and the EKF's skid-steer wheel odometry then fights rtabmap's ICP odometry and
+smears the map whenever the robot turns.
 
 ## Run a trial
 ```bash
-# RaMonES arm, default world
+export RAMONES_SETUP_PATH=/path/to/ramones_ws/config/clearpath/   # frozen campaign config
+export RAMONES_GP_THREADS=2      # optional: keep the GP fit from starving SLAM on <=8 cores
+
+# RaMonES arm, default world (warehouse_barricaded), with the Gazebo GUI
 ros2 launch rad_launch rad_launch_sim_launch.py
 
 # Baseline arm, headless, rectangle world, with the stuck-escape fix on
@@ -217,5 +234,8 @@ ros2 launch rad_launch rad_launch_sim_launch.py \
   radiation_agnostic:=true headless:=true world:=rectangle escape_distance_m:=0.8
 ```
 
+For scored, reproducible trials (pinned source layouts, evaluator, outcome
+detection), use `experiment_runner/run_trial.py` from `ramones_ws`.
+
 ## License
-ISC (see `LICENSE`). Maintainer: Brendon Cintas.
+BSD-3-Clause (see `LICENSE`). Maintainer: Brendon Cintas.

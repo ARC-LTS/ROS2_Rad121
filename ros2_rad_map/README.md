@@ -367,12 +367,14 @@ and applies `params/heatmap.yaml`.
 
 ## Dependencies
 
-From `package.xml`: build tool `ament_cmake`; interface generation via
-`rosidl_default_generators`/`rosidl_default_runtime`. C++: `rclcpp`, `std_msgs`,
-`nav_msgs`, `sensor_msgs`, `geometry_msgs`, `visualization_msgs`, `std_srvs`,
-`tf2`/`tf2_ros`/`tf2_geometry_msgs`, `opencv`/`cv_bridge`, `image_transport`,
-`message_filters`, `pcl_conversions`/`libpcl-dev`, `octomap`/`octomap_msgs`,
-`yaml-cpp`. Python runtime: `rclpy`, `numpy`, `python3-scipy`, `python3-gpy`.
+From `package.xml`: build tools `ament_cmake`, `pkg-config`; interface generation
+via `rosidl_default_generators`/`rosidl_default_runtime`. C++: `rclcpp`,
+`std_msgs`, `nav_msgs`, `sensor_msgs`, `geometry_msgs`, `visualization_msgs`,
+`std_srvs`, `tf2`/`tf2_ros`/`tf2_geometry_msgs`, `libopencv-dev`/`cv_bridge`,
+`image_transport`, `message_filters`, `pcl_conversions`/`libpcl-all-dev`,
+`octomap`/`octomap_msgs`, `yaml-cpp`. Python runtime: `rclpy`, `python3-numpy`,
+`python3-scipy`, and **GPy**, which has no rosdep rule and must be installed with
+`pip3 install GPy`.
 
 ## Build & run
 

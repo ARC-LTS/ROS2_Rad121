@@ -1,9 +1,22 @@
+# Sibling repositories for a standalone ROS2_Rad121 checkout (vcstool).
+#
+# The canonical, pinned setup for the whole system (including the Clearpath
+# platform packages and the frozen robot config) is the meta-repo:
+#   https://github.com/ARC-LTS/ramones_ws
+# Prefer it. This file tracks the same 'maintenance' branches for developers who
+# clone ROS2_Rad121 on its own. The 'main' branches lack the campaign launch
+# arguments (world/headless/radiation_agnostic/gp_mode/setup_path) and must not
+# be used with this branch.
 repositories:
   explore-ros2:
     type: git
-    url: https://github.com/ARC-LTS/explore-ros2
-    version: main
+    url: https://github.com/ARC-LTS/explore-ros2.git
+    version: maintenance
   navigation:
     type: git
-    url: https://github.com/ARC-LTS/navigation
-    version: main
+    url: https://github.com/ARC-LTS/navigation.git
+    version: maintenance
+  gazebo_sim:
+    type: git
+    url: https://github.com/ARC-LTS/gazebo_sim.git
+    version: maintenance
