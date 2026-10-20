@@ -46,11 +46,13 @@ clicking "Publish Point" in RViz.
   — it is a **different quantity** from the sensor simulator's spatial background
   that actually shapes `/rad`.
 
-> Known mismatch / dead code: `rad_sensor_simulator` subscribes to
-> `/rad_field_server/background_radiation` and stores it in `background_radiation_`,
-> but `sensor_update_callback` never reads that member — it uses its own
-> `get_spatial_background`. The subscription is effectively inert; the two nodes'
-> background settings are independent and must be kept consistent by hand.
+> Note: `rad_sensor_simulator` does **not** consume
+> `/rad_field_server/background_radiation`. `/rad` uses the sensor simulator's own
+> deterministic `get_spatial_background`, which is what every campaign trial
+> measured. (It used to subscribe to and store the field server's scalar without
+> ever reading it; that dead subscription has been removed with no change to `/rad`.)
+> The two nodes' background settings are independent and must be kept consistent
+> by hand if the GP prior mean should match the simulated field.
 
 ---
 
@@ -123,8 +125,6 @@ clicking "Publish Point" in RViz.
 
 - `/rad_field_server/sources_data` (`rad_simulation/RadSourceArray`) — the source
   set to render.
-- `/rad_field_server/background_radiation` (`std_msgs/Float64`) — stored but
-  **unused** (see mismatch note above).
 
 **Published topics**
 

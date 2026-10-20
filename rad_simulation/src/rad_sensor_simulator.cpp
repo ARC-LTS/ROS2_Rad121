@@ -25,7 +25,7 @@ struct RadSource
 class RadSensorSimulator : public rclcpp::Node
 {
 public:
-    RadSensorSimulator() : Node("rad_sensor_simulator"), tf_buffer_(this->get_clock()), background_radiation_(0.0)
+    RadSensorSimulator() : Node("rad_sensor_simulator"), tf_buffer_(this->get_clock())
     {
         // Initialize TF listener
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(tf_buffer_);
@@ -74,10 +74,11 @@ public:
             "/rad_field_server/sources_data", 10,
             std::bind(&RadSensorSimulator::sources_callback, this, std::placeholders::_1));
         
-        // Subscription to background radiation
-        background_sub_ = this->create_subscription<std_msgs::msg::Float64>(
-            "/rad_field_server/background_radiation", 10,
-            std::bind(&RadSensorSimulator::background_callback, this, std::placeholders::_1));
+        // /rad_field_server/background_radiation is deliberately NOT consumed:
+        // the simulated reading uses this node's own deterministic spatial
+        // background (get_spatial_background), which is what every campaign
+        // trial measured. The field server's scalar is a separate quantity
+        // used only as a GP prior/visualisation hint by ros2_rad_map.
 
         // Publisher for the simulated /rad topic
         rad_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("/rad", 10);
@@ -110,12 +111,6 @@ private:
         normalized = std::max(0.0, std::min(1.0, normalized));
 
         return bg_min_ + normalized * (bg_max_ - bg_min_);
-    }
-
-    void background_callback(const std_msgs::msg::Float64::SharedPtr msg)
-    {
-        std::lock_guard<std::mutex> lock(source_mutex_);
-        background_radiation_ = msg->data;
     }
 
     void sources_callback(const rad_simulation::msg::RadSourceArray::SharedPtr msg)
@@ -188,7 +183,6 @@ private:
 
     // ROS Comms
     rclcpp::Subscription<rad_simulation::msg::RadSourceArray>::SharedPtr source_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr background_sub_;
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr rad_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
 
@@ -200,7 +194,6 @@ private:
 
     // State
     std::vector<RadSource> sources_;
-    double background_radiation_;
     std::mutex source_mutex_;
     double min_distance_sq_;
     double effective_range_sq_;
