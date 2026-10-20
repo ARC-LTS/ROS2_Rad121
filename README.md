@@ -188,13 +188,13 @@ source install/setup.bash
 ```
 
 Developing on this repo alone? `radmon.repos` pulls the sibling repositories on
-their `maintenance` branches. (Their `main` branches predate the campaign launch
-arguments and won't work with this branch.)
+their `main` branches. The exact state evaluated in the dissertation is tagged
+`dissertation-2026` in every repository.
 
 ```bash
 sudo apt install python3-vcstool
 mkdir -p ~/ros_ws/src && cd ~/ros_ws/src
-git clone -b maintenance https://github.com/ARC-LTS/ROS2_Rad121.git
+git clone https://github.com/ARC-LTS/ROS2_Rad121.git
 vcs import --input ROS2_Rad121/radmon.repos
 cd ~/ros_ws
 rosdep install --from-paths src --ignore-src -r -y
