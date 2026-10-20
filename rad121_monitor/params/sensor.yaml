@@ -1,4 +1,7 @@
 rad121_monitor_node:
   ros__parameters:
-    dead_time: 0.00015        # Seconds
-    sensitivity: 450.0        # CPM per mR/hr
+    # Keys carry the usb_rad121. prefix the driver (CUSB_RAD121.cpp) declares.
+    # Values equal the compiled defaults, so this file is now live without
+    # changing behaviour; edit here to recalibrate a different tube.
+    usb_rad121.dead_time: 0.00015    # Seconds
+    usb_rad121.sensitivity: 450.0    # CPM per mR/hr

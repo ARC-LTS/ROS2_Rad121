@@ -42,12 +42,9 @@ it does in `main()`.
 | `usb_rad121.dead_time` | double | 0.00015 | Detector dead time (seconds); used for the non-paralysable CPM correction `cpm / (1 − cps·dead_time)`. Declared by the driver via `ConfigureFromNode`. |
 | `usb_rad121.sensitivity` | double | 450.0 | Tube sensitivity in CPM per mR/hr; `mR/hr = compensated_cpm / sensitivity`. |
 
-Note: `params/sensor.yaml` lists `dead_time` and `sensitivity` **unprefixed**
-under `rad121_monitor_node`, whereas the driver declares them under the
-`usb_rad121.` prefix (`usb_rad121.dead_time`, `usb_rad121.sensitivity`). As
-written, the YAML values are **not** picked up by the driver — the compiled
-defaults (0.00015 s, 450.0 CPM/mR·hr⁻¹) are used unless the YAML keys are
-corrected to the prefixed form. See Known mismatches.
+`params/sensor.yaml` sets `usb_rad121.dead_time` and `usb_rad121.sensitivity`
+under `rad121_monitor_node`, matching the names the driver declares. Its values
+equal the compiled defaults (0.00015 s, 450.0 CPM/mR·hr⁻¹); edit it to recalibrate.
 
 **Behaviour notes**
 - Pulse timestamps are kept in a deque; CPS = count of timestamps within the last second, CPM = CPS × 60.
@@ -61,10 +58,10 @@ No launch files in this package. Launch lives in `rad_launch`:
 - `rad_launch/launch/rad121_monitor_launch.py` launches `rad121_monitor_node` with `params/sensor.yaml`. It takes no launch arguments.
 
 ## Config files
-- `params/sensor.yaml` — `dead_time: 0.00015`, `sensitivity: 450.0` (see the prefix caveat above).
+- `params/sensor.yaml` — `usb_rad121.dead_time: 0.00015`, `usb_rad121.sensitivity: 450.0`.
 
 ## Known mismatches
-- **Parameter-prefix mismatch**: `params/sensor.yaml` keys (`dead_time`, `sensitivity`) do not match the `usb_rad121.`-prefixed names the driver declares, so the file currently has no effect on the dose math. Either prefix the YAML keys (`usb_rad121.dead_time`, `usb_rad121.sensitivity`) or change the driver's `declare_parameter` names to match.
+- **Parameter-prefix mismatch (fixed)**: `params/sensor.yaml` used unprefixed keys (`dead_time`, `sensitivity`) that the driver never read. The keys are now prefixed (`usb_rad121.*`); because the values equal the compiled defaults, the sensor's dose math is unchanged.
 
 ## Dependencies
 From `package.xml`: `rclcpp`, `std_msgs`. Plus a system dependency on
