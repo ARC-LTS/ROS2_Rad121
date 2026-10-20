@@ -330,10 +330,9 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': True,
-                    # Default is /odometry, which doesn't exist in this stack
-                    # (confirmed directly: node was reading a perpetually-zero
-                    # position and firing false-positive "stuck" triggers
-                    # every ~16s regardless of the robot's real state).
+                    # Explicit for clarity; also the node's default now. The old
+                    # default (/odometry) gave a perpetually-zero pose and
+                    # false-positive "stuck" triggers every ~16 s.
                     'odom_topic': '/odom',
                     'escape_distance_m': ParameterValue(
                         LaunchConfiguration('escape_distance_m'), value_type=float),

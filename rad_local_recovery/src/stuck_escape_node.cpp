@@ -24,7 +24,7 @@ public:
         this->declare_parameter<double>("escape_speed_m_s", 0.10);
         this->declare_parameter<double>("min_movement_m", 0.1);
         this->declare_parameter<double>("min_rotation_rad", 0.08);
-        this->declare_parameter<std::string>("odom_topic", "/odometry");
+        this->declare_parameter<std::string>("odom_topic", "/odom");
         this->declare_parameter<double>("spin_target_yaw_rad", 3.14159);
         this->declare_parameter<double>("spin_timeout_s", 8.0);
 

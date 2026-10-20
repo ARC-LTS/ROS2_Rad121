@@ -90,7 +90,7 @@ while a `navigate_to_pose` goal is executing; if the robot has not moved
 `stuck_timeout_s`, it runs a cancel → back-up → spin escape.
 
 **Subscribed topics**
-- `odom_topic` (default `/odometry`; `nav_msgs/Odometry`) — robot pose. **The stack launch overrides this to `/odom`** because `/odometry` does not exist here (the default produced a perpetually-zero pose and false-positive stuck triggers).
+- `odom_topic` (default `/odom`; `nav_msgs/Odometry`) — robot pose. (The default used to be `/odometry`, which this stack doesn't use and which produced a perpetually-zero pose and false-positive stuck triggers; the stack launch has always set `/odom` explicitly.)
 - `/navigate_to_pose/_action/status` (`action_msgs/GoalStatusArray`) — tracks whether a nav goal is `STATUS_EXECUTING`; the wedge watchdog arms only while one is.
 
 **Published topics**
@@ -110,7 +110,7 @@ while a `navigate_to_pose` goal is executing; if the robot has not moved
 | `escape_speed_m_s` | double | 0.10 | Backward drive speed. Time-based escape therefore covers `0.10 × 2.5 = 0.25 m`. |
 | `min_movement_m` | double | 0.1 | Translation below this (over the measurement window) counts as "not moving". |
 | `min_rotation_rad` | double | 0.08 | Yaw change below this counts as "not moving"; prevents cancelling a legitimate final in-place RotateToGoal. |
-| `odom_topic` | string | `/odometry` | Odometry source (overridden to `/odom` by the stack launch). |
+| `odom_topic` | string | `/odom` | Odometry source (the stack launch also sets `/odom` explicitly). |
 | `spin_target_yaw_rad` | double | 3.14159 | Reorientation angle after the backup (π = 180°). Couples to `explore_node`'s rear-hemisphere frontier penalty — see note. |
 | `spin_timeout_s` | double | 8.0 | Force escape completion if the Spin result never arrives (prevents a permanent `is_escaping_` lock). |
 | `escape_distance_m` | double | 0.0 | **The escape-distance fix.** 0 keeps the legacy time-based 0.25 m backup. A positive value ends the drive on measured odometry displacement instead, clearing the ~0.4–0.5 m costmap inflation band the robot was wedged in and immune to real-time-factor drift. |
