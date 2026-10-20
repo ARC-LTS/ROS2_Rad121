@@ -2,10 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rad_evaluation</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="hello@turingnet.work">brendoncintas</maintainer>
-  <license>TODO: License declaration</license>
+  <version>1.0.0</version>
+  <description>Radiation evaluator node that scores a trial (localization error, dose, coverage, safety violations) and writes per-trial reports, plus evaluation and rosbag launch files.</description>
+  <maintainer email="hello@turingnet.work">Brendon Cintas</maintainer>
+  <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
@@ -13,6 +13,8 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>std_srvs</depend>
   <depend>sensor_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>tf2_ros</depend>

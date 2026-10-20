@@ -5,7 +5,7 @@ package_name = 'rad_launch'
 
 setup(
     name=package_name,
-    version='0.0.0',
+    version='1.0.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -15,10 +15,10 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='brendoncintas',
+    maintainer='Brendon Cintas',
     maintainer_email='hello@turingnet.work',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Staged launch entry points for the RaMonES radiation-aware exploration stack, plus the system reset node.',
+    license='BSD-3-Clause',
     extras_require={
         'test': [
             'pytest',

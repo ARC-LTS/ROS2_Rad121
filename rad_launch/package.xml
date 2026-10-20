@@ -2,10 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rad_launch</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="hello@turingnet.work">brendoncintas</maintainer>
-  <license>TODO: License declaration</license>
+  <version>1.0.0</version>
+  <description>Staged launch entry points for the RaMonES radiation-aware exploration stack (Gazebo, radiation simulation, SLAM, Nav2, exploration, recovery, safety and GP heatmapping), plus the system reset node.</description>
+  <maintainer email="hello@turingnet.work">Brendon Cintas</maintainer>
+  <license>BSD-3-Clause</license>
 
   <depend>launch</depend>
   <depend>launch_ros</depend>
@@ -18,7 +18,14 @@
   <depend>rad_simulation</depend>
   <depend>rad_local_recovery</depend>
   <depend>explore_lite</depend>
-  <depend>spot_robot</depend>
+  <exec_depend>rad_safety</exec_depend>
+  <exec_depend>rad_nav_behavior</exec_depend>
+  <exec_depend>clearpath_gz</exec_depend>
+  <exec_depend>clearpath_nav2_demos</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <!-- rad_spot_launch.py additionally needs spot_robot (Spot hardware bringup,
+       not in this workspace). It is intentionally not declared so rosdep and
+       colcon work without the Spot stack installed. -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

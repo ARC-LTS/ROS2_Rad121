@@ -5,12 +5,14 @@
   <version>2.0.2</version>
   <description>A simple ROS2 driver for the C-USB-RAD121 Geiger Counter.</description>
   <maintainer email="hello@turingnet.work">Brendon Cintas</maintainer>
-  <license>ISC</license>
+  <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>pkg-config</buildtool_depend>
 
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
+  <depend>libftdi1-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

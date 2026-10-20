@@ -5,9 +5,10 @@
   <version>1.0.0</version>
   <description>A package for creating radiation heatmaps, pointclouds, and performing zone analysis using Gaussian processing.</description>
   <maintainer email="hello@turingnet.work">Brendon Cintas</maintainer>
-  <license>ISC</license>
+  <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>pkg-config</buildtool_depend>
   
   <member_of_group>rosidl_interface_packages</member_of_group>
 
@@ -16,17 +17,18 @@
 
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
-  <depend>opencv</depend>
+  <depend>libopencv-dev</depend>
   <depend>cv_bridge</depend>
   <depend>sensor_msgs</depend>
   <depend>image_transport</depend>
   <depend>message_filters</depend>
   <depend>pcl_conversions</depend>
-  <depend>libpcl-dev</depend>
+  <depend>libpcl-all-dev</depend>
   <depend>std_srvs</depend>
   <depend>octomap</depend>
   <depend>octomap_msgs</depend>
@@ -34,9 +36,10 @@
   <depend>yaml-cpp</depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>numpy</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
-  <exec_depend>python3-gpy</exec_depend>
+  <!-- GPy (used by gp_predictor_node.py) has no rosdep rule; install it with
+       pip:  pip3 install GPy  (see ros2_rad_map/README.md). -->
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
