@@ -49,10 +49,10 @@ public:
     {
         this->declare_parameter<std::string>("sensor_frame", "base_link");
         this->declare_parameter<std::string>("map_frame", "map");
-        this->declare_parameter<double>("background_threshold_mrem_hr", 0.1);
+        this->declare_parameter<double>("background_threshold_mrem_hr", 0.0);
         this->declare_parameter<std::string>("output_directory", "/tmp");
         this->declare_parameter<int>("raycasting_max_sources", 5);
-        this->declare_parameter<double>("raycasting_max_distance_m", 10.0);
+        this->declare_parameter<double>("raycasting_max_distance_m", 20.0);
         this->declare_parameter<double>("gp_update_frequency", 0.2);
 
         // Known-field oracle. When true, the published heatmap is replaced by the

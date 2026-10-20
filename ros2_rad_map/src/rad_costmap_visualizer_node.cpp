@@ -24,7 +24,7 @@ public:
     declare_parameter("heatmap_topic", rclcpp::ParameterValue("/rad_heatmap/raw_mean_map"));
     declare_parameter("map_topic", rclcpp::ParameterValue("/map"));
     declare_parameter("radiation_costmap_topic", rclcpp::ParameterValue("/radiation_costmap"));
-    declare_parameter("warning_threshold_mrem_hr", rclcpp::ParameterValue(0.25));
+    declare_parameter("warning_threshold_mrem_hr", rclcpp::ParameterValue(1.0));
     declare_parameter("evacuation_threshold_mrem_hr", rclcpp::ParameterValue(2.0));
     
     heatmap_topic_ = get_parameter("heatmap_topic").as_string();

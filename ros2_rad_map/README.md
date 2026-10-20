@@ -78,10 +78,10 @@ single `data_lock`.
 
 **Parameters** (name — type, default — description)
 
-- `kernel.type` (string, `RBF`) — `RBF` | `Matern52` | `Matern32` | `Exponential`/`Matern12`.
-- `kernel.lengthscale` (double, `5.0`) — kernel lengthscale; also the peak
+- `kernel.type` (string, `Matern52`) — `RBF` | `Matern52` | `Matern32` | `Exponential`/`Matern12`.
+- `kernel.lengthscale` (double, `2.0`) — kernel lengthscale; also the peak
   de-duplication radius.
-- `fix_lengthscale` (bool, `False`) — if true, the lengthscale is fixed and not
+- `fix_lengthscale` (bool, `True`) — if true, the lengthscale is fixed and not
   optimized (and warm-starting of the lengthscale is skipped).
 - `sensor_frame` (string, `base_link`) / `map_frame` (string, `map`) — TF frames.
 - `sparse_threshold` (int, `300`) — above this sample count, switch from exact
@@ -92,7 +92,7 @@ single `data_lock`.
   launch to `<share>/ros2_rad_map/models/gp_model.pkl`. Empty ⇒ multi-fidelity
   silently disabled (falls back to constant-mean GP).
 - `initial_rho` (double, `1.0`) — initial multi-fidelity scaling `rho`.
-- `fix_rho` (bool, `False`) — fix `rho` (and the constant-mean `C` fallback).
+- `fix_rho` (bool, `True`) — fix `rho` (and the constant-mean `C` fallback).
 - `low_fi_max_prior` (double, `100.0`) — cap on the prior contribution, in
   mrem/hr, applied **after** the inverse transform.
 - `prior_transform` (string, `log1p`) — `log1p` | `none`. The offline pipeline
@@ -102,7 +102,7 @@ single `data_lock`.
   (`gp_delta`, the A-11 spatial correction) in the prior mean.
 - `landmark_buffer_size` (int, `500`) — cap on the high-radiation landmark buffer.
 - `landmark_spatial_dist` (double, `0.2`) — merge radius (m) for landmarks.
-- `peak_confidence_threshold` (double, `1.0`) — max predictive std for an
+- `peak_confidence_threshold` (double, `0.8`) — max predictive std for an
   accepted peak (overridden to `0.8` in `heatmap.yaml`).
 - `rad_smoothing_window` (int, `5`) — rolling-average window on raw readings.
 - `gp_noise_variance_min` (double, `0.5`) — floor on GP likelihood variance.
@@ -211,12 +211,12 @@ renders all the published maps and markers.
 **Parameters**
 
 - `sensor_frame` (string, `base_link`) / `map_frame` (string, `map`).
-- `background_threshold_mrem_hr` (double, `0.1`) — display/paint threshold below
+- `background_threshold_mrem_hr` (double, `0.0`) — display/paint threshold below
   which cells are left transparent (`heatmap.yaml` sets `0.0`).
 - `output_directory` (string, `/tmp`) — PNG/CSV output path.
 - `raycasting_max_sources` (int, `5`) — declared; the visibility flood-fill uses
   at most the last 20 samples (not this value) in the current code.
-- `raycasting_max_distance_m` (double, `10.0`) — max flood-fill reach from a
+- `raycasting_max_distance_m` (double, `20.0`) — max flood-fill reach from a
   sample for the visibility mask (`heatmap.yaml` sets `20.0`).
 - `gp_update_frequency` (double, `0.2`) — Hz of the GP update timer (every 5 s).
 - `known_field_mode` (bool, `false`) — **oracle/ablation.** When true, the
@@ -277,12 +277,12 @@ and promotes stable ones to confirmed sources.
 **Parameters**
 
 - `sensor_frame` (string, `base_link`) / `map_frame` (string, `map`).
-- `num_starts` (int, `20`) — random restarts passed to the peak search
+- `num_starts` (int, `30`) — random restarts passed to the peak search
   (`heatmap.yaml` sets `30`).
 - `marker_scale` (double, `0.5`) — RViz marker size.
 - `matching_threshold_m` (double, `1.5`) — max distance to associate a new peak
   with an existing tracked zone.
-- `min_peak_mrem_hr` (double, `0.4`) — minimum peak value to publish a zone
+- `min_peak_mrem_hr` (double, `1.5`) — minimum peak value to publish a zone
   (`heatmap.yaml` sets `1.5`, above the simulator's background max so noise can't
   pass).
 - `source_confirmation_count` (int, `3`) — detections in the same location before
@@ -322,7 +322,7 @@ Converts the GP mean field into a Nav2-style radiation cost layer.
 - `heatmap_topic` (string, `/rad_heatmap/raw_mean_map`).
 - `map_topic` (string, `/map`).
 - `radiation_costmap_topic` (string, `/radiation_costmap`).
-- `warning_threshold_mrem_hr` (double, `0.25`) — start of the graded warning band
+- `warning_threshold_mrem_hr` (double, `1.0`) — start of the graded warning band
   (`heatmap.yaml` sets `1.0`).
 - `evacuation_threshold_mrem_hr` (double, `2.0`) — lethal-cost threshold.
 
@@ -360,12 +360,13 @@ and applies `params/heatmap.yaml`.
 ## Config / param files
 
 - `params/heatmap.yaml` — the operational config for the four core nodes.
-  Key overrides vs. in-code defaults: `gp_predictor_node` uses `Matern52`
-  lengthscale `2.0` with `fix_lengthscale: True` and `fix_rho: True` (so kernel
-  variance is the only free hyperparameter), `peak_confidence_threshold: 0.8`,
+  Highlights: `gp_predictor_node` uses `Matern52` lengthscale `2.0` with
+  `fix_lengthscale: True` and `fix_rho: True` (so kernel variance is the only
+  free hyperparameter), `peak_confidence_threshold: 0.8`,
   `gp_noise_variance_min: 0.5`; `peak_finder_client_node` uses `num_starts: 30`
   and `min_peak_mrem_hr: 1.5`; `rad_costmap_visualizer_node` uses
-  `warning_threshold_mrem_hr: 1.0`.
+  `warning_threshold_mrem_hr: 1.0`. The in-code defaults now equal these YAML
+  values, so a node started without the YAML behaves the same as in the campaign.
 - `params/pointcloud.yaml`, `params/zones.yaml`, `params/zone_planner.yaml`,
   `params/predefined_zones.yaml` — for the auxiliary (non-core) nodes.
 - `models/gp_model.pkl` — the offline multi-fidelity prior (`gp_lo` + `gp_delta`).

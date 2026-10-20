@@ -56,10 +56,10 @@ public:
     {
         this->declare_parameter<std::string>("sensor_frame", "base_link");
         this->declare_parameter<std::string>("map_frame", "map");
-        this->declare_parameter<int>("num_starts", 20);
+        this->declare_parameter<int>("num_starts", 30);
         this->declare_parameter<double>("marker_scale", 0.5);
         this->declare_parameter<double>("matching_threshold_m", 1.5);
-        this->declare_parameter<double>("min_peak_mrem_hr", 0.4);
+        this->declare_parameter<double>("min_peak_mrem_hr", 1.5);
         // A peak must be found in the same location at least this many consecutive
         // service calls before it is promoted to a "confirmed source".
         // At the default 15-second interval, 3 = confirmed after ~45 s of stability.

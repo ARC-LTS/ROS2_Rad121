@@ -26,8 +26,8 @@ public:
           is_retreating_(false)
     {
         // Parameters
-        this->declare_parameter<double>("emergency_threshold_mrem_hr", 10.0);
-        this->declare_parameter<double>("retreat_distance_m", 1.5);
+        this->declare_parameter<double>("emergency_threshold_mrem_hr", 12.0);
+        this->declare_parameter<double>("retreat_distance_m", 2.5);
         this->declare_parameter<std::string>("robot_base_frame", "base_link");
         this->declare_parameter<std::string>("map_frame", "map");
         this->declare_parameter<int>("dose_smoothing_window", 5);

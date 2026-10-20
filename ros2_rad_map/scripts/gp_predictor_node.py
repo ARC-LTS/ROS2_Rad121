@@ -112,16 +112,16 @@ class GPPredictor(Node):
     def __init__(self):
         super().__init__('gp_predictor_node')
         
-        self.declare_parameter('kernel.type', 'RBF')
-        self.declare_parameter('kernel.lengthscale', 5.0)
-        self.declare_parameter('fix_lengthscale', False)
+        self.declare_parameter('kernel.type', 'Matern52')
+        self.declare_parameter('kernel.lengthscale', 2.0)
+        self.declare_parameter('fix_lengthscale', True)
         self.declare_parameter('sensor_frame', 'base_link')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('sparse_threshold', 300) # Points before switching to Sparse GP
         self.declare_parameter('use_multi_fidelity', True)
         self.declare_parameter('model_path', '')
         self.declare_parameter('initial_rho', 1.0)
-        self.declare_parameter('fix_rho', False)
+        self.declare_parameter('fix_rho', True)
         self.declare_parameter('low_fi_max_prior', 100.0) # Cap on the prior contribution, in mrem/hr
         # The offline pipeline trains on log(1+y), so the serialized model must
         # be inverse-transformed before it can be used against /rad readings in
@@ -133,7 +133,7 @@ class GPPredictor(Node):
         self.declare_parameter('use_discrepancy', True)
         self.declare_parameter('landmark_buffer_size', 500)
         self.declare_parameter('landmark_spatial_dist', 0.2)
-        self.declare_parameter('peak_confidence_threshold', 1.0) # Max allowed std dev
+        self.declare_parameter('peak_confidence_threshold', 0.8) # Max allowed std dev
         self.declare_parameter('rad_smoothing_window', 5)        # Rolling average before training
         self.declare_parameter('gp_noise_variance_min', 0.5)     # Floor on GP likelihood variance
         self.declare_parameter('landmark_background_min', 0.3)   # Min background used for landmark threshold

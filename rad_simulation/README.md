@@ -105,13 +105,13 @@ clicking "Publish Point" in RViz.
 - `enable_sources` (bool, `true`).
 - `known_sources` (double[], `[]`) — flat `[x, y, intensity, ...]` triples spawned
   at startup.
-- `num_unknown_sources` (int, `3`) — random sources spawned at startup.
-- `num_high_intensity_sources` (int, `1`) — how many of those are high-intensity.
+- `num_unknown_sources` (int, `0`) — random sources spawned at startup.
+- `num_high_intensity_sources` (int, `0`) — how many of those are high-intensity.
 - `high_intensity_threshold` (double, `10.0`) — high-intensity sources drawn
   uniformly in `[threshold, 2·threshold]`.
-- `low_intensity_min` (double, `2.5`) / `low_intensity_max` (double, `5.0`) —
+- `low_intensity_min` (double, `1.0`) / `low_intensity_max` (double, `3.0`) —
   range for low-intensity random sources.
-- `background_radiation_enabled` (bool, `false`).
+- `background_radiation_enabled` (bool, `true`).
 - `background_radiation_min` (double, `0.05`) / `background_radiation_max`
   (double, `1.0`).
 - `min_source_distance_from_robot_m` (double, `2.0`) — clearance from the robot's
@@ -137,7 +137,7 @@ clicking "Publish Point" in RViz.
 - `publish_rate_hz` (double, `10.0`) — sensor update / publish rate.
 - `min_sensing_distance_m` (double, `0.58`) — fallback near-field clamp if
   `effective_range_m` is 0.
-- `effective_range_m` (double, `5.0`) — distance at which full source intensity is
+- `effective_range_m` (double, `2.0`) — distance at which full source intensity is
   read; the inverse-square cap radius. (`params/sensor_simulator.yaml` sets `2.0`.)
 - `background_radiation_enabled` (bool, `true`).
 - `background_radiation_min` (double, `0.05`) / `background_radiation_max`

@@ -35,7 +35,7 @@ public:
         this->declare_parameter<std::string>("robot_frame", "base_link");
         this->declare_parameter<double>("publish_rate_hz", 10.0);
         this->declare_parameter<double>("min_sensing_distance_m", 0.58);
-        this->declare_parameter<double>("effective_range_m", 5.0);
+        this->declare_parameter<double>("effective_range_m", 2.0);
         this->declare_parameter<bool>("background_radiation_enabled", true);
         this->declare_parameter<double>("background_radiation_min", 0.05);
         this->declare_parameter<double>("background_radiation_max", 1.0);

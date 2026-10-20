@@ -45,7 +45,7 @@ gp_predictor_node:
     gp_noise_variance_min: 0.5        # GP likelihood noise floor; prevents fitting exactly through spikes
     landmark_background_min: 0.3      # Minimum effective background (mrem/hr) used for landmark threshold
     # Max allowed predictive std dev for a candidate peak in find_peaks_callback.
-    # Was 1.0 (the default): observed phantom detections in bench-scale testing
+    # Was 1.0 (the old default): observed phantom detections in bench-scale testing
     # had std in the 1.0-1.15 range, i.e. right at/above the old cutoff, so it
     # wasn't actually filtering the marginal, low-confidence local optima that
     # scipy's random-restart search turns up away from real data. 0.6 was tried
@@ -59,7 +59,6 @@ peak_finder_client_node:
     map_frame: "map"
     num_starts: 30
     marker_scale: 0.5
-    marker_color_r: [1.0, 0.0, 0.0, 1.0]
     matching_threshold_m: 1.5
     # Was 0.1: below rad_simulation's own background_radiation_max (1.0 mrem/hr,
     # see rad_simulation/params/sensor_simulator.yaml), so background noise alone

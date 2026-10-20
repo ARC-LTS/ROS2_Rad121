@@ -49,12 +49,12 @@ public:
         this->declare_parameter<std::string>("robot_frame", "base_link");
         this->declare_parameter<bool>("enable_sources", true);
         this->declare_parameter<std::vector<double>>("known_sources", std::vector<double>{});
-        this->declare_parameter<int>("num_unknown_sources", 3);
-        this->declare_parameter<int>("num_high_intensity_sources", 1);
+        this->declare_parameter<int>("num_unknown_sources", 0);
+        this->declare_parameter<int>("num_high_intensity_sources", 0);
         this->declare_parameter<double>("high_intensity_threshold", 10.0);
-        this->declare_parameter<double>("low_intensity_min", 2.5);
-        this->declare_parameter<double>("low_intensity_max", 5.0);
-        this->declare_parameter<bool>("background_radiation_enabled", false);
+        this->declare_parameter<double>("low_intensity_min", 1.0);
+        this->declare_parameter<double>("low_intensity_max", 3.0);
+        this->declare_parameter<bool>("background_radiation_enabled", true);
         this->declare_parameter<double>("background_radiation_min", 0.05);
         this->declare_parameter<double>("background_radiation_max", 1.0);
         // Random placement previously only checked the cell was free space, with

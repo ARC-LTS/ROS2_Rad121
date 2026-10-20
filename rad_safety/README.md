@@ -44,8 +44,8 @@ Executable `rad_safety_monitor_node` — source `src/rad_safety_monitor_node.cpp
 **Parameters** (declared defaults; `params/rad_safety.yaml` overrides a subset)
 | Parameter | Type | Default (declared) | Description |
 | --- | --- | --- | --- |
-| `emergency_threshold_mrem_hr` | double | 10.0 | Emergency brake threshold. **The YAML raises this to 12.0** so it sits above `local_recovery_node`'s 10.0 acute trigger (see Behaviour notes). Scaled by the budget multiplier. |
-| `retreat_distance_m` | double | 1.5 | Nominal retreat distance directly behind the robot. **YAML sets 2.5.** |
+| `emergency_threshold_mrem_hr` | double | 12.0 | Emergency brake threshold, deliberately set so it sits above `local_recovery_node`'s 10.0 acute trigger (see Behaviour notes). Scaled by the budget multiplier. |
+| `retreat_distance_m` | double | 2.5 | Nominal retreat distance directly behind the robot. |
 | `robot_base_frame` | string | `base_link` | TF frame for the robot-pose lookup. |
 | `map_frame` | string | `map` | TF/goal frame. |
 | `dose_smoothing_window` | int | 5 | Number of consecutive `/rad` readings averaged before triggering; prevents false retreats from transient spikes. |
@@ -79,7 +79,7 @@ The stack bring-up (`rad_launch_sim_launch.py`) includes this launch in **both**
 arms (it is not gated on `radiation_agnostic`).
 
 ## Config files
-- `params/rad_safety.yaml` — `emergency_threshold_mrem_hr: 12.0`, `retreat_distance_m: 2.5`, `dose_smoothing_window: 5`, `robot_base_frame: base_link`, `map_frame: map`. (Note the YAML overrides the node's declared defaults of 10.0 and 1.5.)
+- `params/rad_safety.yaml` — `emergency_threshold_mrem_hr: 12.0`, `retreat_distance_m: 2.5`, `dose_smoothing_window: 5`, `robot_base_frame: base_link`, `map_frame: map`. (The node's in-code defaults now match these values.)
 
 ## Dependencies
 From `package.xml`: `rclcpp`, `rclcpp_action`, `std_msgs`, `nav_msgs`,
