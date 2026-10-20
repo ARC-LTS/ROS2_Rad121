@@ -3,7 +3,7 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 import os
 
 def generate_launch_description():
@@ -19,6 +19,12 @@ def generate_launch_description():
         'sensor_simulator.yaml'
     )
 
+    # Where rad_field_server's save_sources/load_sources write/read the layout.
+    # Empty -> the node's compiled default (<share>/params/saved_sources.yaml).
+    default_saved_sources = os.path.join(rad_simulation_share, 'params', 'saved_sources.yaml')
+    saved_sources_file = PythonExpression([
+        "'", LaunchConfiguration('saved_sources_file'), "' or '", default_saved_sources, "'"])
+
     #battery_launch = IncludeLaunchDescription(
     #    PythonLaunchDescriptionSource(
     #        os.path.join(clearpath_gz_share, 'launch', 'battery_launch.py')
@@ -32,13 +38,18 @@ def generate_launch_description():
             default_value='3',
             description='Number of random radiation sources to spawn via service call.'
         ),
+        DeclareLaunchArgument(
+            'saved_sources_file',
+            default_value='',
+            description='Layout YAML for save_sources/load_sources (empty = share default).'
+        ),
         Node(
             package='rad_simulation',
             executable='rad_field_server',
             name='rad_field_server',
             output='screen',
             emulate_tty=True,
-            parameters=[param_file] # Load all parameters from the YAML file
+            parameters=[param_file, {'output_yaml_file': saved_sources_file}]
         ),
         Node(
             package='rad_simulation',

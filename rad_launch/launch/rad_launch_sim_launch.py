@@ -4,7 +4,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import EnvironmentVariable, LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -21,6 +21,20 @@ def generate_launch_description():
                     'and circles each discovered source before resuming exploration.',
     )
     orbit_surveys = LaunchConfiguration('orbit_surveys')
+
+    default_saved_sources = os.path.join(
+        get_package_share_directory('rad_simulation'), 'params', 'saved_sources.yaml')
+    saved_sources_file_arg = DeclareLaunchArgument(
+        'saved_sources_file',
+        default_value='',
+        description='Source-layout YAML that rad_field_server save_sources/load_sources '
+                    'write/read (and zone_publisher_node syncs from). Empty = '
+                    '<rad_simulation share>/params/saved_sources.yaml, which under '
+                    '--symlink-install is the tracked source file. The trial harness '
+                    'passes a per-trial staging copy.',
+    )
+    saved_sources_file = PythonExpression([
+        "'", LaunchConfiguration('saved_sources_file'), "' or '", default_saved_sources, "'"])
 
     setup_path_arg = DeclareLaunchArgument(
         'setup_path',
@@ -215,7 +229,8 @@ def generate_launch_description():
         actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(rad_launch_share, 'launch', 'simulation_launch.py')
-            )
+            ),
+            launch_arguments={'saved_sources_file': saved_sources_file}.items()
         )]
     )
 
@@ -398,9 +413,7 @@ def generate_launch_description():
                     'zones_file': 'none',
                     'zones_topic': '/radiation_zones',
                     'publish_rate_hz': 1.0,
-                    'saved_sources_file': os.path.join(
-                        get_package_share_directory('rad_simulation'),
-                        'params', 'saved_sources.yaml'),
+                    'saved_sources_file': saved_sources_file,
                 }],
                 condition=IfCondition(orbit_surveys),
             ),
@@ -451,6 +464,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         setup_path_arg,
+        saved_sources_file_arg,
         orbit_surveys_arg,
         headless_arg,
         world_arg,
