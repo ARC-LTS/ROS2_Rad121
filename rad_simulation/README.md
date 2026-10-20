@@ -179,9 +179,7 @@ Messages (`msg/`): `RadSource` (`int32 id`, `geometry_msgs/Point position`,
 
 Services (`srv/`): `SpawnSource` (`x, y, intensity` → `success, message`),
 `SpawnRandomSources` (`int32 num_sources` → `success, message`), `SetFloat64`
-(`float64 data` → `success, message`), `AddSource` (`geometry_msgs/Point
-position`, `float64 intensity` → `success, message` — **generated but not used by
-any node in this package; dead interface**).
+(`float64 data` → `success, message`).
 
 ---
 

@@ -35,8 +35,6 @@ include_directories(include ${OpenCV_INCLUDE_DIRS})
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GPPredict.srv"
   "srv/FindPeaks.srv"
-  "srv/GetHeatmaps.srv"
-  "srv/SaveMaps.srv"
   "srv/OrbitZone.srv"
   "srv/GoToZone.srv"
   "msg/RadZone.msg"

@@ -34,13 +34,12 @@ source.
 
 This package also builds several auxiliary executables that are **not** part of
 the core estimation path documented here (`rad_mapper_node`,
-`rad_pointcloud_node`, `gp_visualizer_node`) and ships extra param files
-(`pointcloud.yaml`, `zones.yaml`, `zone_planner.yaml`, `predefined_zones.yaml`)
-for them. `src/rad_zone_planner_node.cpp` is present in the tree but is **not
-compiled** (it has no `add_executable` entry in `CMakeLists.txt`) — treat it as
-dead/legacy code. Likewise the generated services `GetHeatmaps.srv`,
-`SaveMaps.srv`, `OrbitZone.srv`, `GoToZone.srv` are declared for those auxiliary
-nodes and are not used by the four core nodes below.
+`rad_pointcloud_node`, `gp_visualizer_node`) and ships `pointcloud.yaml` for
+`rad_pointcloud_node`. The unbuilt `rad_zone_planner_node.cpp`, its
+`zone_planner.yaml`, the `zones.yaml`/`predefined_zones.yaml` used only by the
+removed zone-selector launch, and the never-used `GetHeatmaps`/`SaveMaps` service
+types have been deleted. `OrbitZone` and `GoToZone` are used by
+`rad_nav_behavior` (zone explorer / zone publisher).
 
 ---
 
@@ -312,10 +311,6 @@ Converts the GP mean field into a Nav2-style radiation cost layer.
   `NO_INFORMATION (255)` where uncertain/out-of-overlap; `LETHAL_OBSTACLE (254)`
   at/above `evacuation_threshold_mrem_hr`; a graded `1..INSCRIBED (253)` value in
   the warning band between the two thresholds.
-- `/radiation_cost_zones` (`visualization_msgs/MarkerArray`) — **computed but the
-  publish call is commented out** (`marker_pub_->publish(...)` is disabled). The
-  warning/evac CUBE_LIST markers are built but never sent; only the costmap is
-  published. Dead output — noted for the handoff.
 
 **Parameters**
 
@@ -335,8 +330,8 @@ published cost values exactly.
 
 ## Interfaces defined by this package
 
-Services (`srv/`): `GPPredict`, `FindPeaks` (core); `GetHeatmaps`, `SaveMaps`,
-`OrbitZone`, `GoToZone` (auxiliary nodes). Messages (`msg/`): `RadZone`
+Services (`srv/`): `GPPredict`, `FindPeaks` (core); `OrbitZone`, `GoToZone`
+(used by `rad_nav_behavior`'s zone explorer and zone publisher). Messages (`msg/`): `RadZone`
 (`string label`, `geometry_msgs/Point center` — note `center.z` carries the peak
 dose rate), `RadZoneArray` (`Header header`, `RadZone[] zones`).
 
@@ -367,8 +362,7 @@ and applies `params/heatmap.yaml`.
   and `min_peak_mrem_hr: 1.5`; `rad_costmap_visualizer_node` uses
   `warning_threshold_mrem_hr: 1.0`. The in-code defaults now equal these YAML
   values, so a node started without the YAML behaves the same as in the campaign.
-- `params/pointcloud.yaml`, `params/zones.yaml`, `params/zone_planner.yaml`,
-  `params/predefined_zones.yaml` — for the auxiliary (non-core) nodes.
+- `params/pointcloud.yaml` — for the auxiliary `rad_pointcloud_node`.
 - `models/gp_model.pkl` — the offline multi-fidelity prior (`gp_lo` + `gp_delta`).
 
 ## Dependencies

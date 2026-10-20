@@ -142,11 +142,10 @@ Launches `ros2_rad_map/peak_finder_client_node` with `heatmap.yaml` (same as
 `peak_finder_launch.py`). No arguments.
 
 ### Stale / disabled launch files
-These reference executables that are **not built in the current `ros2_rad_map`
-CMakeLists**, or have their main actions commented out; treat as non-functional
-until repaired:
-- `rad_zones_selector_launch.py` — references `zone_selector_node` (not built).
-- `static_rad_heatmap_launch.py` — references `static_gp_predictor_node.py` and `static_rad_heatmap_node` (not built).
+These hardware-oriented launches have their main actions commented out; treat as
+partial bring-ups until repaired. (The former `rad_zones_selector_launch.py` and
+`static_rad_heatmap_launch.py`, which referenced executables that are not built,
+have been removed.)
 - `rad_cuda_launch.py` — a timed bring-up whose returned `LaunchDescription` only enables `gp_stack` + `heatmap_stack`; sim/nav/explore/reset actions are commented out. (Comment notes there is no CUDA code path — GPy and OpenCV both run on CPU.)
 - `rad_spot_launch.py` — Spot variant; same pattern, only `gp_stack` + `heatmap_stack` active in the returned description.
 

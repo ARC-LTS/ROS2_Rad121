@@ -20,7 +20,6 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetFloat64.srv"
-  "srv/AddSource.srv"
   "srv/SpawnSource.srv"
   "srv/SpawnRandomSources.srv"
   "msg/RadSource.msg"

@@ -1,7 +1,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
-#include "visualization_msgs/msg/marker_array.hpp"
 #include <cv_bridge/cv_bridge.h>
 #include <mutex>
 
@@ -45,7 +44,6 @@ public:
     uncertainty_sub_ = create_subscription<sensor_msgs::msg::Image>(
       "/rad_heatmap/gp_std_dev", 10, std::bind(&RadCostmapVisualizerNode::uncertaintyCallback, this, std::placeholders::_1));
 
-    marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/radiation_cost_zones", 10);
     costmap_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(radiation_costmap_topic_, map_qos);
 
     RCLCPP_INFO(get_logger(), "Radiation Costmap Visualizer has started.");
@@ -79,7 +77,6 @@ private:
       return;
     }
 
-    visualization_msgs::msg::MarkerArray marker_array;
     auto now = this->get_clock()->now();
 
     // Prepare OccupancyGrid message
@@ -93,14 +90,8 @@ private:
     // for the out-of-overlap region.
     radiation_costmap_msg.data.assign(map_info_.width * map_info_.height, (int8_t)(unsigned char)255);
 
-    auto warning_marker = create_marker("warning_zone", 0, 1.0, 0.5, 0.0); // Orange
-    auto evac_marker = create_marker("evacuation_zone", 1, 1.0, 0.0, 0.0); // Red
-
     unsigned int map_width = map_info_.width;
     unsigned int map_height = map_info_.height;
-    double map_res = map_info_.resolution;
-    double map_origin_x = map_info_.origin.position.x;
-    double map_origin_y = map_info_.origin.position.y;
 
     cv::Mat uncertainty_img;
     {
@@ -155,8 +146,7 @@ private:
         cost_roi.setTo(cv::Scalar(cost_values::LETHAL_OBSTACLE), evac_mask);
         cost_roi.setTo(cv::Scalar(255), uncertain_mask);
 
-        std::vector<cv::Point> evac_pixels, warn_pixels;
-        cv::findNonZero(evac_mask, evac_pixels);
+        std::vector<cv::Point> warn_pixels;
         cv::findNonZero(warn_only_mask, warn_pixels);
 
         for (const auto& pt : warn_pixels) {
@@ -169,37 +159,8 @@ private:
         for (int r = 0; r < overlap_rows; ++r) {
             std::memcpy(&radiation_costmap_msg.data[r * map_width], cost_roi.ptr<uchar>(r), overlap_cols);
         }
-
-        for (const auto& pt : evac_pixels) {
-            geometry_msgs::msg::Point p;
-            p.x = map_origin_x + (pt.x + 0.5) * map_res;
-            p.y = map_origin_y + (pt.y + 0.5) * map_res;
-            p.z = 0.0;
-            evac_marker.points.push_back(p);
-        }
-        for (const auto& pt : warn_pixels) {
-            geometry_msgs::msg::Point p;
-            p.x = map_origin_x + (pt.x + 0.5) * map_res;
-            p.y = map_origin_y + (pt.y + 0.5) * map_res;
-            p.z = 0.0;
-            warning_marker.points.push_back(p);
-        }
     }
 
-    if (!warning_marker.points.empty()) {
-      marker_array.markers.push_back(warning_marker);
-    }
-    if (!evac_marker.points.empty()) {
-      marker_array.markers.push_back(evac_marker);
-    }
-    
-    // Publish even if empty to clear old markers
-    if (marker_array.markers.empty()) {
-        warning_marker.action = visualization_msgs::msg::Marker::DELETEALL;
-        marker_array.markers.push_back(warning_marker);
-    }
-
-    // marker_pub_->publish(marker_array);
     costmap_pub_->publish(radiation_costmap_msg);
   }
 
@@ -213,26 +174,6 @@ private:
     } catch (const cv_bridge::Exception& e) {
       RCLCPP_ERROR(get_logger(), "cv_bridge exception in uncertainty: %s", e.what());
     }
-  }
-
-  visualization_msgs::msg::Marker create_marker(std::string ns, int id, float r, float g, float b)
-  {
-      auto marker = visualization_msgs::msg::Marker();
-      marker.header.frame_id = map_frame_id_;
-      marker.header.stamp = this->get_clock()->now();
-      marker.ns = ns;
-      marker.id = id;
-      marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
-      marker.action = visualization_msgs::msg::Marker::ADD;
-      marker.pose.orientation.w = 1.0;
-      marker.scale.x = map_info_.resolution;
-      marker.scale.y = map_info_.resolution;
-      marker.scale.z = 0.1;
-      marker.color.r = r;
-      marker.color.g = g;
-      marker.color.b = b;
-      marker.color.a = 0.5;
-      return marker;
   }
 
   std::mutex map_mutex_;
@@ -249,7 +190,6 @@ private:
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr heatmap_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr uncertainty_sub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
 
   cv::Mat latest_uncertainty_;

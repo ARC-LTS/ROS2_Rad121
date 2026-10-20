@@ -58,7 +58,7 @@ Two physically-distinct recovery mechanisms live in `rad_local_recovery`:
 **`rad_simulation`** — the simulated sensing layer that stands in for `rad121_monitor`
 during trials. `rad_field_server` holds the ground-truth field (point sources with
 ~1/r² decay plus a fixed randomized spatial background), exposes services to spawn,
-clear, and save sources (`SpawnSource`, `SpawnRandomSources`, `AddSource`,
+clear, and save sources (`SpawnSource`, `SpawnRandomSources`,
 `SetFloat64`, plus `std_srvs` toggles), and publishes source markers / source data /
 background level under `~/`. `rad_sensor_simulator` samples that field at the robot's
 TF pose and publishes the reading on **`/rad`** (`std_msgs/Float64MultiArray`,
@@ -68,8 +68,8 @@ lets you place sources interactively from RViz's "Publish Point". Params in
 `params/sensor_simulator.yaml` and the `*_saved_sources.yaml` world presets.
 
 **`ros2_rad_map`** — the mapping and source-localization brain, and the package that
-defines the shared custom interfaces (`GPPredict`, `FindPeaks`, `GetHeatmaps`,
-`SaveMaps`, `OrbitZone`, `GoToZone` services; `RadZone`, `RadZoneArray` messages).
+defines the shared custom interfaces (`GPPredict`, `FindPeaks`,
+`OrbitZone`, `GoToZone` services; `RadZone`, `RadZoneArray` messages).
 `gp_predictor_node.py` (GPy, CPU) consumes `/rad` + robot pose and serves the
 multi-fidelity Autoregressive GP (`argp`) or single-fidelity prediction via the
 `predict_gp` service, plus hotspot optimization via `find_rad_peaks`.
@@ -79,7 +79,7 @@ notably **`/rad_heatmap/gp_mean_map`** and **`/rad_heatmap/raw_mean_map`**
 `reset_rad_heatmap` / `save_rad_maps`. `peak_finder_client_node` turns GP peaks into
 **`/radiation_zones`** (`RadZoneArray`) and `/confirmed_rad_sources`. The rest
 (`gp_visualizer_node`, `rad_costmap_visualizer_node`, `rad_pointcloud_node`,
-`rad_mapper_node`, `rad_zone_planner_node`) are visualization/auxiliary nodes. The
+`rad_mapper_node`) are visualization/auxiliary nodes. The
 trained low-fidelity prior lives in `models/gp_model.pkl`.
 
 **`rad_evaluation`** — the scoring and dose-budget layer. `rad_evaluator_node`
