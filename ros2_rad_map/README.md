@@ -150,15 +150,15 @@ single `data_lock`.
     reproduce pre-2026-07-20 behavior (isolation experiment only; known to cause
     the std-collapse pathology above).
 
-### rad_heatmap_node (`src/rad_heatmap_node.cpp`, node name `dynamic_rad_heatmap_node`)
+### rad_heatmap_node (`src/rad_heatmap_node.cpp`, node name `rad_heatmap_node`)
 
-> Note: the executable/node is named `dynamic_rad_heatmap_node` in code, but the
-> params in `params/heatmap.yaml` are keyed under `rad_heatmap_node`. The YAML
-> therefore only applies if the node is launched with the name `rad_heatmap_node`
-> (via launch-file naming). Several keys in that YAML section
-> (`min_valid_mrem`, `min_sample_mrem`, `recent_samples_window_size`,
-> `gaussian_sigma`, `gaussian_blur_size`, `zone_separation_aggressiveness`) are
-> **not declared** by this node and are inert.
+> Note: the node's default name used to be `dynamic_rad_heatmap_node`, so
+> `params/heatmap.yaml` (keyed under `rad_heatmap_node`) only applied because
+> `rad_heatmap_launch.py` renames it. The default now matches the YAML, so a bare
+> `ros2 run` picks up the same parameters as the launch. Six keys the node never
+> declared (`min_valid_mrem`, `min_sample_mrem`, `recent_samples_window_size`,
+> `gaussian_sigma`, `gaussian_blur_size`, `zone_separation_aggressiveness`) were
+> removed from that YAML section. Neither change affects the campaign stack.
 
 Multi-threaded executor. Maintains its own background/elevation model and sample
 buffer (independent of `gp_predictor_node`'s), drives the GP on a timer, and

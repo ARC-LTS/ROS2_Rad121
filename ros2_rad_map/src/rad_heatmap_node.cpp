@@ -43,7 +43,7 @@ void addLegendToImage(cv::Mat &image, double min_val, double max_val, const std:
 class DynamicRadiationHeatmapNode : public rclcpp::Node
 {
 public:
-    DynamicRadiationHeatmapNode() : Node("dynamic_rad_heatmap_node"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_), current_background_level_(0.0) {}
+    DynamicRadiationHeatmapNode() : Node("rad_heatmap_node"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_), current_background_level_(0.0) {}
 
     void init()
     {

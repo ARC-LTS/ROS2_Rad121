@@ -5,18 +5,10 @@ rad_heatmap_node:
     map_frame: "map"
     # output_directory: ""  # Defaults to /tmp; override via launch argument to set a persistent output path
 
-    min_valid_mrem: 0.4
-    min_sample_mrem: 0.0
     background_threshold_mrem_hr: 0.0
-    recent_samples_window_size: 30
     raycasting_max_sources: 5
     raycasting_max_distance_m: 20.0
     gp_update_frequency: 0.2
-
-    gaussian_sigma: 15.0
-    gaussian_blur_size: 3  # must be odd
-
-    zone_separation_aggressiveness: 0.75
 
 
 rad_mapper_node:
