@@ -34,7 +34,6 @@ public:
     {
         // Parameters
         this->declare_parameter<int>("dose_confirmation_count", 3);
-        this->declare_parameter<double>("critical_dose_mrem_hr", 2.0);
         this->declare_parameter<double>("acute_dose_rate_mrem_hr", 10.0);
         // Aligned with params/local_recovery.yaml (was 0.25 here against 1.0
         // there). The YAML wins wherever it is loaded, so deployment was
@@ -69,7 +68,6 @@ public:
         this->declare_parameter<double>("max_radiation_dose_mrem", 100.0);
 
         dose_confirmation_count_ = this->get_parameter("dose_confirmation_count").as_int();
-        critical_dose_ = this->get_parameter("critical_dose_mrem_hr").as_double();
         acute_dose_rate_ = this->get_parameter("acute_dose_rate_mrem_hr").as_double();
         safe_dose_threshold_ = this->get_parameter("safe_dose_threshold_mrem_hr").as_double();
         max_recovery_episodes_ = static_cast<int>(this->get_parameter("max_recovery_episodes").as_int());
@@ -737,7 +735,6 @@ private:
     }
 
     // Parameters
-    double critical_dose_;      // cost-function / safe-zone threshold (2.0 mrem/hr)
     double acute_dose_rate_;    // hard evacuation trigger (10.0 mrem/hr)
     double safe_dose_threshold_;
     int max_recovery_episodes_{0};

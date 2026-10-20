@@ -64,7 +64,7 @@ only when `record_ground_truth:=true`, bridging `/model/robot/pose` → `/ground
 | `radiation_seek_trap_avoid_radius_m` | `0.0` | Deny the seek bonus within this radius of a recent stuck-escape location. 0 = disabled. |
 | `blacklist_ttl_s` | `0.0` | Seconds after which a blacklisted frontier becomes eligible again. 0 = permanent. |
 | `safety_agnostic` | `false` | Exploratory ablation only: also disable `rad_safety_monitor_node`'s hard brake. Distinct from `radiation_agnostic`; keep `false` for confirmatory H1–H4 trials. |
-| `retreat_dose_mrem_hr` | `2.0` | Passed to `rad_local_recovery_launch.py` as `critical_dose_mrem_hr` (see caveat in the `rad_local_recovery` README — that node's real trigger is `acute_dose_rate_mrem_hr`). |
+| `retreat_dose_mrem_hr` | `2.0` | **Deprecated, no effect.** Kept only so existing callers (`run_trial.py`) don't break. The hard-brake trigger is `acute_dose_rate_mrem_hr` (10.0) in `rad_local_recovery/params/local_recovery.yaml`. |
 | `escape_distance_m` | `0.0` | `stuck_escape_node` escape-distance fix. 0 = legacy time-based 0.25 m; positive = distance-based backup that clears the inflation band. |
 | `idle_stall_timeout_s` | `0.0` | Report a robot stationary with no nav goal executing for this long on `/stuck_escape/idle_stall`. 0 = disabled. |
 | `spin_target_yaw_rad` | `3.14159` | Reorientation angle at the end of a stuck escape (couples to `explore_node`'s rear-hemisphere frontier penalty). |
@@ -103,10 +103,9 @@ Launches `rad_local_recovery/local_recovery_node` with
 `rad_local_recovery/params/local_recovery.yaml`, `use_sim_time:=true`.
 | Argument | Default | Description |
 | --- | --- | --- |
-| `radiation_agnostic` | `false` | `true` sets `critical_dose_mrem_hr`, `acute_dose_rate_mrem_hr`, `safe_dose_threshold_mrem_hr` all to 1e6 (disables recovery). |
+| `radiation_agnostic` | `false` | `true` sets `acute_dose_rate_mrem_hr` and `safe_dose_threshold_mrem_hr` to 1e6 (disables recovery). |
 | `dose_relaxation_k` | `0.0` | → `dose_budget_relaxation_k`. |
 | `max_recovery_episodes` | `0` | → `max_recovery_episodes` (0 = unbounded). |
-| `retreat_dose_mrem_hr` | `2.0` | → `critical_dose_mrem_hr`. (Ignored when `radiation_agnostic`; and note that param is dead in the node — see the `rad_local_recovery` README.) |
 
 ### `rad_safety_launch.py` — hard emergency brake
 Launches `rad_safety/rad_safety_monitor_node` with `rad_safety/params/rad_safety.yaml`,

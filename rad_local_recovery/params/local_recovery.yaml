@@ -1,6 +1,5 @@
 local_recovery_node:
   ros__parameters:
-    critical_dose_mrem_hr: 2.0      # cost-function / safe-zone boundary
     acute_dose_rate_mrem_hr: 10.0   # hard evacuation trigger
     safe_dose_threshold_mrem_hr: 1.0
     recovery_search_distance_m: 15.0

@@ -56,7 +56,6 @@ timer (`recoveryTick`) drives the state machine.
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `dose_confirmation_count` | int | 3 | Rolling-average window length over `/rad[1]`; smooths transient spikes before recovery is considered. |
-| `critical_dose_mrem_hr` | double | 2.0 | **Unused by this node's logic** (declared, read, stored, never referenced in any branch). Labelled "cost-function / safe-zone threshold". See Known mismatches. |
 | `acute_dose_rate_mrem_hr` | double | 10.0 | **The real hard-evacuation trigger.** Recovery fires when the rolling average exceeds `acute_dose_rate_mrem_hr * budget_multiplier`. |
 | `safe_dose_threshold_mrem_hr` | double | 1.0 | Resume threshold; exploration resumes once the rolling average drops below `safe_dose_threshold_mrem_hr * budget_multiplier`. |
 | `recovery_search_distance_m` | double | 15.0 | Max radius of the polar escape-point search. |
@@ -131,16 +130,16 @@ while a `navigate_to_pose` goal is executing; if the robot has not moved
 
 This package ships **no launch files of its own**. Launch orchestration lives in
 `rad_launch`:
-- `rad_launch/launch/rad_local_recovery_launch.py` launches `local_recovery_node` (loads `params/local_recovery.yaml`, applies the `radiation_agnostic`, `dose_relaxation_k`, `retreat_dose_mrem_hr`, and `max_recovery_episodes` overrides, and sets `use_sim_time:=true`).
+- `rad_launch/launch/rad_local_recovery_launch.py` launches `local_recovery_node` (loads `params/local_recovery.yaml`, applies the `radiation_agnostic`, `dose_relaxation_k`, and `max_recovery_episodes` overrides, and sets `use_sim_time:=true`).
 - `rad_launch/launch/rad_launch_sim_launch.py` launches `stuck_escape_node` inline (with `odom_topic:=/odom`, `use_sim_time:=true`, and the `escape_distance_m`, `idle_stall_timeout_s`, `spin_target_yaw_rad` args wired through).
 
 See the `rad_launch` README for every argument and default.
 
 ## Config files
-- `params/local_recovery.yaml` — defaults for `local_recovery_node`: `critical_dose_mrem_hr: 2.0`, `acute_dose_rate_mrem_hr: 10.0`, `safe_dose_threshold_mrem_hr: 1.0`, `recovery_search_distance_m: 15.0`, `robot_base_frame: base_link`, `map_frame: map`, `fallback_retreat_distance_m: 3.0`, `return_to_origin: false`, `origin_x/y: 0.0`, explore stop/start service names. `stuck_escape_node` has no params file.
+- `params/local_recovery.yaml` — defaults for `local_recovery_node`: `acute_dose_rate_mrem_hr: 10.0`, `safe_dose_threshold_mrem_hr: 1.0`, `recovery_search_distance_m: 15.0`, `robot_base_frame: base_link`, `map_frame: map`, `fallback_retreat_distance_m: 3.0`, `return_to_origin: false`, `origin_x/y: 0.0`, explore stop/start service names. `stuck_escape_node` has no params file.
 
 ## Known mismatches / dead code
-- **`critical_dose_mrem_hr` is dead in the node.** It is declared, read, and stored, but never used in any conditional (the real trigger is `acute_dose_rate_mrem_hr`, default 10.0). However, `rad_local_recovery_launch.py` sets `critical_dose_mrem_hr` from the `retreat_dose_mrem_hr` launch arg and comments it as "the actual hard-brake retreat trigger". Net effect: **varying `retreat_dose_mrem_hr` in the non-agnostic arm does not change recovery behaviour** — the acute trigger stays at 10.0. (The `radiation_agnostic` arm still disables recovery correctly, because it sets all three thresholds — including `acute_dose_rate_mrem_hr` — to 1e6.)
+- **`critical_dose_mrem_hr` removed (was dead).** The node used to declare, read, and store it without ever using it, and `rad_local_recovery_launch.py` fed it from the `retreat_dose_mrem_hr` launch arg as if it were the hard-brake trigger. Both the parameter and that plumbing are gone; behaviour is unchanged. The operative hard-brake trigger is, and always was, `acute_dose_rate_mrem_hr` (10.0). `rad_launch_sim_launch.py` still accepts `retreat_dose_mrem_hr` as a deprecated no-op so existing callers keep working. The `radiation_agnostic` arm still disables recovery by setting `acute_dose_rate_mrem_hr` and `safe_dose_threshold_mrem_hr` to 1e6.
 - **Node vs. YAML default for `safe_dose_threshold_mrem_hr`**: now aligned at 1.0 (an earlier node default of 0.25 against a YAML of 1.0 is called out in the source comments).
 - **Commented-out physical escape**: `startPhysicalEscape()` / the `/cmd_vel` publisher in `local_recovery_node` are disabled; the physical back-up role is served by `stuck_escape_node` instead.
 

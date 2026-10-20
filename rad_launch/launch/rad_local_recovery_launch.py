@@ -13,7 +13,7 @@ def launch_setup(context, *args, **kwargs):
     )
 
     parameters = [param_file]
-    # critical_dose_mrem_hr/acute_dose_rate_mrem_hr/safe_dose_threshold_mrem_hr
+    # acute_dose_rate_mrem_hr/safe_dose_threshold_mrem_hr
     # are only ever read once, at construction -- there is no on_set_parameters
     # callback, so a runtime `ros2 param set` on a running node has zero
     # effect on behavior even though it updates the parameter server's stored
@@ -21,18 +21,9 @@ def launch_setup(context, *args, **kwargs):
     # local recovery for a radiation-agnostic baseline arm.
     if LaunchConfiguration('radiation_agnostic').perform(context) == 'true':
         parameters.append({
-            'critical_dose_mrem_hr': 1000000.0,
             'acute_dose_rate_mrem_hr': 1000000.0,
             'safe_dose_threshold_mrem_hr': 1000000.0,
         })
-    else:
-        # Actual hard-brake retreat trigger (distinct from rad_evaluator_node's
-        # critical_dose_mrem_hr, which only affects reporting). 2.0 (default)
-        # reproduces every confirmatory trial to date exactly.
-        parameters.append({
-            'critical_dose_mrem_hr': float(LaunchConfiguration('retreat_dose_mrem_hr').perform(context)),
-        })
-
     parameters.append({
         'max_recovery_episodes': int(LaunchConfiguration('max_recovery_episodes').perform(context)),
         'dose_budget_relaxation_k': float(LaunchConfiguration('dose_relaxation_k').perform(context)),
@@ -74,16 +65,6 @@ def generate_launch_description():
                         'consecutive_recovery_failures_ bounds a losing streak but not '
                         'the total, so an oscillating mission can otherwise consume the '
                         'whole wall clock in recover/resume cycles.',
-        ),
-        DeclareLaunchArgument(
-            'retreat_dose_mrem_hr',
-            default_value='2.0',
-            description='Instantaneous dose-rate threshold that triggers local_recovery_node\'s '
-                        'actual hard-brake retreat. 2.0 (default) reproduces every confirmatory '
-                        'trial to date exactly. Ignored when radiation_agnostic is true (that '
-                        'override always wins). Distinct from rad_evaluation\'s '
-                        'critical_dose_mrem_hr, which only affects reported violations/'
-                        'max_penetration, not robot behavior.',
         ),
         OpaqueFunction(function=launch_setup),
     ])

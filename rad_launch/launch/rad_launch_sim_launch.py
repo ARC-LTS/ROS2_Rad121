@@ -177,9 +177,12 @@ def generate_launch_description():
     retreat_dose_mrem_hr_arg = DeclareLaunchArgument(
         'retreat_dose_mrem_hr',
         default_value='2.0',
-        description='Instantaneous dose-rate threshold that triggers local_recovery_node\'s '
-                    'actual hard-brake retreat. 2.0 (default) reproduces every confirmatory '
-                    'trial to date exactly.',
+        description='DEPRECATED, no effect. Accepted only so existing callers '
+                    '(experiment_runner/run_trial.py --retreat-threshold-mrem-hr) keep '
+                    'working. local_recovery_node never read the value it fed '
+                    '(critical_dose_mrem_hr was dead); the operative hard-brake trigger '
+                    'is acute_dose_rate_mrem_hr (10.0) in rad_local_recovery/params/'
+                    'local_recovery.yaml.',
     )
 
     # --- 1. Core Gazebo Simulation (Husky robot) ---
@@ -288,7 +291,6 @@ def generate_launch_description():
                 launch_arguments=[
                     ('radiation_agnostic', LaunchConfiguration('radiation_agnostic')),
                     ('dose_relaxation_k', LaunchConfiguration('dose_relaxation_k')),
-                    ('retreat_dose_mrem_hr', LaunchConfiguration('retreat_dose_mrem_hr')),
                     ('max_recovery_episodes', LaunchConfiguration('max_recovery_episodes')),
                 ]
             ),
