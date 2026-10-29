@@ -566,6 +566,12 @@ class GPPredictor(Node):
                 # Both branches now report mrem/hr, so the filter means the same
                 # thing in each; the cold-start branch is correspondingly
                 # stricter than it used to be (linear std has median 0.93).
+                # Cold start (no fitted GP, searching the prior over +-50 m):
+                # keep the bench-tested 0.8 gate regardless of the param, or the
+                # prior's random optima flood the peak finder with phantom zones
+                # (28 of them before the first sample, wh7d 2026-10-29).
+                if gp_model is None:
+                    conf_thresh = min(conf_thresh, 0.8)
                 if peak_std > conf_thresh:
                     n_conf_reject += 1
                     continue
