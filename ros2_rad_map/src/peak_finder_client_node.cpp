@@ -3,6 +3,7 @@
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include <algorithm>
 #include "ros2_rad_map/srv/find_peaks.hpp"
 #include "ros2_rad_map/msg/rad_zone.hpp"
 #include "ros2_rad_map/msg/rad_zone_array.hpp"
@@ -62,8 +63,14 @@ public:
         this->declare_parameter<double>("min_peak_mrem_hr", 1.5);
         // A peak must be found in the same location at least this many consecutive
         // service calls before it is promoted to a "confirmed source".
-        // At the default 15-second interval, 3 = confirmed after ~45 s of stability.
+        // At the default 5 s poll interval, 3 = confirmed after ~15 s of stability.
         this->declare_parameter<int>("source_confirmation_count", 3);
+        // Seconds between /find_rad_peaks calls. Confirmation needs
+        // source_confirmation_count consecutive hits, so at the old hardcoded
+        // 15 s a source first seen mid-mission needed 45 s of stability -- on
+        // a short mission (66 s on rectangle_obst_1, 2026-10-29) the second
+        // source was never confirmed before return-to-home. 5 s confirms in ~15 s.
+        this->declare_parameter<double>("peak_poll_interval_s", 5.0);
 
         sensor_frame_ = this->get_parameter("sensor_frame").as_string();
         map_frame_ = this->get_parameter("map_frame").as_string();
@@ -92,8 +99,9 @@ public:
         confirmed_sources_pub_ = this->create_publisher<ros2_rad_map::msg::RadZoneArray>("/confirmed_rad_sources", 10);
         confirmed_source_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/confirmed_rad_source_markers", 10);
 
+        const double poll_s = this->get_parameter("peak_poll_interval_s").as_double();
         timer_ = this->create_wall_timer(
-            std::chrono::seconds(15),
+            std::chrono::milliseconds(static_cast<int>(std::max(0.5, poll_s) * 1000.0)),
             std::bind(&PeakFinderClientNode::callPeakFinderService, this));
 
         RCLCPP_INFO(this->get_logger(), "Peak Finder Client initialized. Confirmation threshold: %d detections.", source_confirmation_count_);
@@ -213,6 +221,27 @@ private:
                         new_zone.center = response->peaks[i];
                         persistent_zones_.push_back(new_zone);
                         zone_detection_counts_.push_back(1);
+                        zone_miss_counts_.push_back(0);
+                    }
+                }
+
+                // Forget zones the GP has stopped reporting. A transient bump
+                // between two sources got its 3 hits early, then was never seen
+                // again but stayed "confirmed" (a fake third source on the map
+                // for the whole run, auto3 2026-10-29). zone_miss_counts_ is
+                // parallel to persistent_zones_; matched_persistent_zones only
+                // covers zones that existed before this poll's additions.
+                for (size_t j = 0; j < matched_persistent_zones.size(); ++j) {
+                    zone_miss_counts_[j] = matched_persistent_zones[j] ? 0 : zone_miss_counts_[j] + 1;
+                }
+                for (size_t j = persistent_zones_.size(); j-- > 0;) {
+                    if (zone_miss_counts_[j] > zone_max_misses_) {
+                        RCLCPP_INFO(this->get_logger(), "Dropping zone %s at (%.2f, %.2f): not seen for %d polls.",
+                            persistent_zones_[j].label.c_str(), persistent_zones_[j].center.x,
+                            persistent_zones_[j].center.y, zone_miss_counts_[j]);
+                        persistent_zones_.erase(persistent_zones_.begin() + j);
+                        zone_detection_counts_.erase(zone_detection_counts_.begin() + j);
+                        zone_miss_counts_.erase(zone_miss_counts_.begin() + j);
                     }
                 }
 
@@ -379,6 +408,8 @@ private:
     std::vector<ros2_rad_map::msg::RadZone> persistent_zones_;
     // Parallel to persistent_zones_: how many service calls have found a peak here.
     std::vector<int> zone_detection_counts_;
+    std::vector<int> zone_miss_counts_;   // consecutive polls without a match
+    static constexpr int zone_max_misses_ = 6;  // ~30 s at the 5 s poll
     char next_zone_label_ = 'A';
     bool is_service_running_ = false;
 

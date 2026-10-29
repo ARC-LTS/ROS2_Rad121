@@ -51,7 +51,12 @@ gp_predictor_node:
     # scipy's random-restart search turns up away from real data. 0.6 was tried
     # first but suppressed real (weak, ~1.5-2.5 mrem/hr) sources too; 0.8 is the
     # bench-tested value that filtered phantoms while still confirming a real one.
-    peak_confidence_threshold: 0.8
+    # 2026-10-29: 0.8 -> 1.2. The GP std floor is ~0.71 even on top of data; a
+    # source the robot only clipped at speed sits at std ~0.9-1.1 and was
+    # rejected every poll, so explore_node never got a zone to drive to. A
+    # looser gate admits it as a *candidate*; explore_node then goes there and
+    # the extra samples either confirm it (3 hits) or let it fade.
+    peak_confidence_threshold: 1.2
 
 peak_finder_client_node:
   ros__parameters:
@@ -64,7 +69,7 @@ peak_finder_client_node:
     # see rad_simulation/params/sensor_simulator.yaml), so background noise alone
     # could pass the candidate-peak filter. Raised with margin above background
     # while staying below the smallest real source floor (low_intensity_min=2.5).
-    min_peak_mrem_hr: 1.5
+    min_peak_mrem_hr: 1.2  # 2026-10-29: was 1.5; a 2.4 mrem/hr source sampled only in passing reads ~1.3 on the GP mean
 
 rad_costmap_visualizer_node:
   ros__parameters:
